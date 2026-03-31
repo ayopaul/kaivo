@@ -22,6 +22,10 @@ module.exports = {
         test: /\.css$/,
         use: ['style-loader', 'css-loader'],
       },
+      {
+        test: /pdf\.worker\.mjs$/,
+        type: 'asset/resource',
+      },
     ],
   },
   plugins: [
@@ -33,5 +37,8 @@ module.exports = {
     port: 3000,
     hot: true,
     historyApiFallback: true,
+  },
+  performance: {
+    hints: false,
   },
 };
