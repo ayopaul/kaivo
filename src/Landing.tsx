@@ -61,9 +61,9 @@ const Landing: React.FC<LandingProps> = ({
       }
 
       onFileLoaded(bookData, fileKey);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load file:', err);
-      alert('Failed to load file. Please try another.');
+      alert(`Failed to load file: ${err?.message || err}. Please try another.`);
       setLoading(false);
     }
   }, [onFileLoaded]);

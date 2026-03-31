@@ -4,9 +4,9 @@ let pdfjsLib: any = null;
 async function getPdfjs() {
   if (pdfjsLib) return pdfjsLib;
 
-  // Load pdfjs as ES module from public/, bypassing Next.js webpack
+  // Load pdfjs from public/, bypassing Next.js webpack
   // @ts-ignore - loaded at runtime from /public/pdfjs/
-  pdfjsLib = await import(/* webpackIgnore: true */ '/pdfjs/pdf.min.mjs');
+  pdfjsLib = await import(/* webpackIgnore: true */ '/pdfjs/pdf.min.js');
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
   return pdfjsLib;
