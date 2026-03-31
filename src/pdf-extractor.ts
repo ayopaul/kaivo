@@ -22,18 +22,31 @@ export interface BookData {
   fileType: 'pdf' | 'epub';
 }
 
-export async function extractPdf(file: File): Promise<BookData> {
+/** Detect if we're on a mobile/low-memory device */
+function isMobile(): boolean {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
+}
+
+export async function extractPdf(
+  file: File,
+  onProgress?: (current: number, total: number) => void
+): Promise<BookData> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
   const pageImages: PageImage[] = [];
   const textParts: string[] = [];
+  const mobile = isMobile();
+  const renderScale = mobile ? 1 : 1.5;
+  const totalPages = pdf.numPages;
 
-  for (let i = 1; i <= pdf.numPages; i++) {
+  for (let i = 1; i <= totalPages; i++) {
+    onProgress?.(i, totalPages);
+
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 2 });
+    const viewport = page.getViewport({ scale: renderScale });
 
-    // Render page to offscreen canvas
     const offscreen = document.createElement('canvas');
     offscreen.width = viewport.width;
     offscreen.height = viewport.height;
@@ -41,18 +54,10 @@ export async function extractPdf(file: File): Promise<BookData> {
 
     await page.render({ canvasContext: offCtx, viewport, canvas: offscreen } as any).promise;
 
-    // Apply greyscale filter
-    offCtx.filter = 'grayscale(100%)';
+    // Apply greyscale using canvas filter (GPU-accelerated, no pixel loop)
+    offCtx.filter = 'grayscale(1)';
     offCtx.drawImage(offscreen, 0, 0);
-    const imageData = offCtx.getImageData(0, 0, offscreen.width, offscreen.height);
-    const data = imageData.data;
-    for (let j = 0; j < data.length; j += 4) {
-      const avg = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
-      data[j] = avg;
-      data[j + 1] = avg;
-      data[j + 2] = avg;
-    }
-    offCtx.putImageData(imageData, 0, 0);
+    offCtx.filter = 'none';
 
     pageImages.push({
       canvas: offscreen,
@@ -60,7 +65,7 @@ export async function extractPdf(file: File): Promise<BookData> {
       height: viewport.height,
     });
 
-    // Extract text
+    // Extract embedded text
     const content = await page.getTextContent();
     const text = content.items
       .map((item: any) => item.str)
@@ -68,6 +73,11 @@ export async function extractPdf(file: File): Promise<BookData> {
       .replace(/\s+/g, ' ')
       .trim();
     if (text) textParts.push(text);
+
+    // Yield to event loop every few pages to prevent UI freeze
+    if (i % 3 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
 
   // Extract TOC from PDF outline

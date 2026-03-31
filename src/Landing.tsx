@@ -25,16 +25,21 @@ const Landing: React.FC<LandingProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState('');
 
   const handleFile = useCallback(async (file: File) => {
     setLoading(true);
+    setLoadingProgress('');
     try {
       const ext = file.name.split('.').pop()?.toLowerCase();
       let bookData: BookData;
 
       if (ext === 'pdf') {
-        bookData = await extractPdf(file);
+        bookData = await extractPdf(file, (current, total) => {
+          setLoadingProgress(`Page ${current} of ${total}`);
+        });
       } else if (ext === 'epub') {
+        setLoadingProgress('Extracting chapters...');
         bookData = await extractEpub(file);
       } else {
         alert('Unsupported file type. Please use PDF or EPUB.');
@@ -80,6 +85,9 @@ const Landing: React.FC<LandingProps> = ({
     return (
       <div className="loading-overlay">
         <div className="loading-spinner"></div>
+        {loadingProgress && (
+          <div className="loading-progress">{loadingProgress}</div>
+        )}
       </div>
     );
   }

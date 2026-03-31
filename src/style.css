@@ -817,6 +817,7 @@ html, body {
   inset: 0;
   background: var(--bg);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   z-index: 100;
@@ -833,4 +834,10 @@ html, body {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.loading-progress {
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
 }
