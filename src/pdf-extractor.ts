@@ -1,14 +1,13 @@
-const PDFJS_VERSION = '5.6.205';
+const PDFJS_VERSION = '4.8.69';
 let pdfjsLib: any = null;
 
 async function getPdfjs() {
   if (pdfjsLib) return pdfjsLib;
 
-  // Load pdfjs from public/, bypassing Next.js webpack
-  // @ts-ignore - loaded at runtime from /public/pdfjs/
-  pdfjsLib = await import(/* webpackIgnore: true */ '/pdfjs/pdf.min.js');
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  pdfjsLib = pdfjs;
   pdfjsLib.GlobalWorkerOptions.workerSrc =
-    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
+    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/legacy/build/pdf.worker.min.mjs`;
   return pdfjsLib;
 }
 
@@ -49,7 +48,6 @@ export async function extractPdf(
   const textParts: string[] = [];
   const totalPages = pdf.numPages;
 
-  // First pass: extract text from all pages with line/paragraph detection
   for (let i = 1; i <= totalPages; i++) {
     onProgress?.(i, totalPages);
 
@@ -65,7 +63,6 @@ export async function extractPdf(
 
   const allText = textParts.join('\n\n');
 
-  // If very little text extracted (scanned PDF), render pages as images as fallback
   let pageImages: PageImage[] = [];
   if (allText.length < 200 && totalPages > 0) {
     const mobile = isMobile();
@@ -110,7 +107,6 @@ export async function extractPdf(
 function extractPageText(items: any[]): string {
   if (items.length === 0) return '';
 
-  // Build lines from Y position changes
   const rawLines: { text: string; fontSize: number; y: number }[] = [];
   let currentText = '';
   let lastY: number | null = null;
@@ -127,7 +123,6 @@ function extractPageText(items: any[]): string {
 
     if (lastY !== null && y !== null) {
       const yDiff = Math.abs(lastY - y);
-      // New line if Y position changed
       if (yDiff > lastFontSize * 0.3) {
         if (currentText.trim()) {
           rawLines.push({ text: currentText.trim(), fontSize: currentFontSize, y: lastY });
@@ -148,7 +143,6 @@ function extractPageText(items: any[]): string {
 
   if (rawLines.length === 0) return '';
 
-  // Determine the most common font size (body text size)
   const fontCounts = new Map<number, number>();
   for (const line of rawLines) {
     const rounded = Math.round(line.fontSize);
@@ -160,7 +154,6 @@ function extractPageText(items: any[]): string {
     if (count > maxCount) { maxCount = count; bodyFontSize = size; }
   }
 
-  // Group lines into paragraphs, mark headings with \x04 prefix
   const paragraphs: string[] = [];
   let currentPara: string[] = [];
   let currentParaIsHeading = false;

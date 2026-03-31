@@ -457,6 +457,7 @@ export class CanvasRenderer {
     this.canvas.addEventListener('touchstart', this._onTouchStart, { passive: false });
     this.canvas.addEventListener('touchmove', this._onTouchMove, { passive: false });
     this.canvas.addEventListener('touchend', this._onTouchEnd);
+    this.canvas.addEventListener('touchcancel', this._onTouchEnd);
     this.canvas.addEventListener('click', this._onClick);
     this.canvas.addEventListener('mousemove', this._onMouseMove);
     window.addEventListener('resize', this._onResize);
@@ -467,6 +468,7 @@ export class CanvasRenderer {
     this.canvas.removeEventListener('touchstart', this._onTouchStart);
     this.canvas.removeEventListener('touchmove', this._onTouchMove);
     this.canvas.removeEventListener('touchend', this._onTouchEnd);
+    this.canvas.removeEventListener('touchcancel', this._onTouchEnd);
     this.canvas.removeEventListener('click', this._onClick);
     this.canvas.removeEventListener('mousemove', this._onMouseMove);
     window.removeEventListener('resize', this._onResize);
