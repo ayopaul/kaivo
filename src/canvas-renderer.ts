@@ -10,6 +10,7 @@ interface TextLine {
   runs: TextRun[];
   y: number;
   baseFontSize: number;
+  isHeading?: boolean;
 }
 
 interface ImageBlock {
@@ -72,12 +73,29 @@ export class CanvasRenderer {
   private pageGap = 30;
   private fontFamily = "'Inter', system-ui, sans-serif";
 
+  /** Compute padding based on viewport width */
+  private getPadding(): number {
+    const w = this.canvas.getBoundingClientRect().width;
+    return w < 500 ? 8 : w < 768 ? 20 : 40;
+  }
+
+  /** Even less padding for images on small screens */
+  private getImagePadding(): number {
+    const w = this.canvas.getBoundingClientRect().width;
+    return w < 500 ? 4 : w < 768 ? 16 : 40;
+  }
+
+  private getPageGap(): number {
+    const w = this.canvas.getBoundingClientRect().width;
+    return w < 500 ? 12 : 30;
+  }
+
   // Bionic reading
   private bionic = false;
 
   // Morph config
-  private morphRadius = 0.35;
-  private morphStrength = 1.8;
+  private morphRadius = 0.25;
+  private morphStrength = 1.5;
 
   // Scroll direction tracking
   private prevScrollY = 0;
@@ -122,13 +140,14 @@ export class CanvasRenderer {
     this.linkRegions = [];
 
     const viewWidth = this.canvas.getBoundingClientRect().width;
-    const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
+    // Reduce layout width to leave room for morph scaling at center
+    const morphFactor = (this.mode === 'scroll-morph' || this.mode === 'combined')
+      ? this.morphStrength : 1;
 
     if (pageImages && pageImages.length > 0) {
       this.layoutImages(pageImages, viewWidth);
     } else {
-      const effectiveWidth = isMorph ? viewWidth / this.morphStrength : viewWidth;
-      this.layoutText(text, effectiveWidth);
+      this.layoutText(text, viewWidth / morphFactor);
     }
   }
 
@@ -140,10 +159,10 @@ export class CanvasRenderer {
     const isMorph = mode === 'scroll-morph' || mode === 'combined';
     if (wasMorph !== isMorph && this.rawText) {
       const viewWidth = this.canvas.getBoundingClientRect().width;
-      const effectiveWidth = isMorph ? viewWidth / this.morphStrength : viewWidth;
+      const factor = isMorph ? this.morphStrength : 1;
       this.blocks = [];
       this.linkRegions = [];
-      this.layoutText(this.rawText, effectiveWidth / this.pinchScale);
+      this.layoutText(this.rawText, viewWidth / factor / this.pinchScale);
     }
   }
 
@@ -172,6 +191,15 @@ export class CanvasRenderer {
     this.clampScroll();
   }
 
+  getZoomScale(): number {
+    return this.pinchScale;
+  }
+
+  setZoomScale(scale: number) {
+    this.pinchScale = scale;
+    this.targetPinchScale = scale;
+  }
+
   getScrollFraction(): number {
     const scaledHeight = this.totalHeight * this.pinchScale;
     if (scaledHeight <= 0) return 0;
@@ -194,8 +222,10 @@ export class CanvasRenderer {
   // ── Layout ──
 
   private layoutImages(pageImages: PageImage[], viewWidth: number) {
-    let y = this.padding;
-    const maxWidth = viewWidth - this.padding * 2;
+    const pad = this.getImagePadding();
+    const gap = this.getPageGap();
+    let y = pad;
+    const maxWidth = viewWidth - pad * 2;
 
     for (const img of pageImages) {
       const scale = maxWidth / img.width;
@@ -210,10 +240,10 @@ export class CanvasRenderer {
         displayHeight,
       });
 
-      y += displayHeight + this.pageGap;
+      y += displayHeight + gap;
     }
 
-    this.totalHeight = y + this.padding;
+    this.totalHeight = y + pad;
   }
 
   /**
@@ -261,24 +291,40 @@ export class CanvasRenderer {
     return runs;
   }
 
-  /** Strip link markers for plain text measurement */
+  /** Strip link and heading markers for plain text measurement */
   private stripMarkers(text: string): string {
-    return text.replace(/\x01[^\x02]*\x02([^\x03]*)\x03/g, '$1');
+    return text.replace(/\x01[^\x02]*\x02([^\x03]*)\x03/g, '$1').replace(/\x04/g, '');
   }
 
   private layoutText(text: string, viewWidth: number) {
-    const maxWidth = viewWidth - this.padding * 2;
+    const pad = this.getPadding();
+    const maxWidth = viewWidth - pad * 2;
     const fontSize = this.baseFontSize;
     this.ctx.font = `${fontSize}px ${this.fontFamily}`;
 
-    let y = this.padding;
+    let y = pad;
     const paragraphs = text.split(/\n+/);
 
-    for (const para of paragraphs) {
+    for (let pIdx = 0; pIdx < paragraphs.length; pIdx++) {
+      let para = paragraphs[pIdx];
+
+      // Detect heading marker
+      const isHeading = para.startsWith('\x04');
+      if (isHeading) para = para.slice(1);
+
       if (this.stripMarkers(para).trim() === '') {
         y += fontSize * this.lineHeight * 0.5;
         continue;
       }
+
+      // Extra space before headings
+      if (isHeading && pIdx > 0) {
+        y += fontSize * this.lineHeight * 0.8;
+      }
+
+      // Headings use 1.4x font size
+      const paraFontSize = isHeading ? fontSize * 1.4 : fontSize;
+      this.ctx.font = `${isHeading ? '600 ' : ''}${paraFontSize}px ${this.fontFamily}`;
 
       // Parse paragraph into runs, then tokenize into words preserving run info
       const runs = this.parseRuns(para);
@@ -297,27 +343,25 @@ export class CanvasRenderer {
 
       const flushLine = () => {
         if (lineRuns.length === 0) return;
-        // Merge adjacent runs with same href
         const merged = this.mergeRuns(lineRuns);
-        this.blocks.push({ kind: 'text', runs: merged, y, baseFontSize: fontSize });
+        this.blocks.push({ kind: 'text', runs: merged, y, baseFontSize: paraFontSize, isHeading });
 
-        // Record link regions for click detection
-        let xOffset = this.padding;
+        let xOffset = pad;
         for (const run of merged) {
           const w = this.ctx.measureText(run.text).width;
           if (run.href) {
             this.linkRegions.push({
               x: xOffset,
-              y: y - fontSize,
+              y: y - paraFontSize,
               width: w,
-              height: fontSize * this.lineHeight,
+              height: paraFontSize * this.lineHeight,
               href: run.href,
             });
           }
           xOffset += w;
         }
 
-        y += fontSize * this.lineHeight;
+        y += paraFontSize * this.lineHeight;
         lineRuns = [];
         lineWidth = 0;
       };
@@ -351,10 +395,11 @@ export class CanvasRenderer {
       }
       flushLine();
 
-      y += fontSize * this.lineHeight * 0.3;
+      // Extra space after headings, normal gap after body paragraphs
+      y += paraFontSize * this.lineHeight * (isHeading ? 0.5 : 0.3);
     }
 
-    this.totalHeight = y + this.padding;
+    this.totalHeight = y + pad;
   }
 
   /** Merge adjacent TextRuns that share the same href (or lack thereof) */
@@ -379,7 +424,8 @@ export class CanvasRenderer {
 
     const viewWidth = this.canvas.getBoundingClientRect().width;
     const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
-    const effectiveWidth = (isMorph ? viewWidth / this.morphStrength : viewWidth) / this.pinchScale;
+    const morphFactor = isMorph ? this.morphStrength : 1;
+    const effectiveWidth = viewWidth / morphFactor / this.pinchScale;
 
     const viewH = this.canvas.getBoundingClientRect().height;
     const oldMaxScroll = Math.max(1, this.totalHeight * this.lastLayoutScale - viewH);
@@ -467,15 +513,28 @@ export class CanvasRenderer {
   }
 
   private onTouchEnd(_e: TouchEvent) {
-    if (!this.isPinching && Math.abs(this.touchVelocity) > 2) {
-      this.targetScrollY += this.touchVelocity * 8;
-      this.clampScroll();
-    }
     this.isPinching = false;
   }
 
   private onResize() {
     this.resize();
+    // Re-layout content for new viewport size
+    if (this.rawText || (this.rawPageImages && this.rawPageImages.length > 0)) {
+      const savedProgress = this.getProgress();
+      this.blocks = [];
+      this.linkRegions = [];
+      const viewWidth = this.canvas.getBoundingClientRect().width;
+      if (this.rawPageImages && this.rawPageImages.length > 0) {
+        this.layoutImages(this.rawPageImages, viewWidth);
+      } else {
+        const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
+        const morphFactor = isMorph ? this.morphStrength : 1;
+        this.layoutText(this.rawText, viewWidth / morphFactor / this.pinchScale);
+      }
+      if (savedProgress > 0.001) {
+        this.setScrollProgress(savedProgress);
+      }
+    }
   }
 
   /** Convert canvas click coordinates to content space and check for link hits */
@@ -547,15 +606,11 @@ export class CanvasRenderer {
   // ── Render loop ──
 
   private loop() {
-    // Spring physics for scroll
-    this.scrollVelocitySpring += (this.targetScrollY - this.scrollY) * 0.14;
-    this.scrollVelocitySpring *= 0.78;
-    this.scrollY += this.scrollVelocitySpring;
+    // Direct scroll — no spring, no bounce
+    this.scrollY = this.targetScrollY;
 
-    // Spring physics for zoom
-    this.zoomVelocitySpring += (this.targetPinchScale - this.pinchScale) * 0.06;
-    this.zoomVelocitySpring *= 0.82;
-    this.pinchScale += this.zoomVelocitySpring;
+    // Direct zoom — no spring, no bounce
+    this.pinchScale = this.targetPinchScale;
 
     // Re-layout text when zoom changes
     const scaleChanged = Math.abs(this.pinchScale - this.lastLayoutScale) > 0.03;
@@ -586,8 +641,16 @@ export class CanvasRenderer {
 
     this.ctx.clearRect(0, 0, w, h);
 
+    // Clip to canvas bounds so morphed text doesn't overflow
+    this.ctx.save();
+    this.ctx.beginPath();
+    this.ctx.rect(0, 0, w, h);
+    this.ctx.clip();
+
     const viewCenterY = h / 2;
     const morphRadiusPx = h * this.morphRadius;
+
+    const pad = this.getPadding();
 
     for (const block of this.blocks) {
       const baseScale = (this.mode === 'pinch' || this.mode === 'combined')
@@ -614,9 +677,9 @@ export class CanvasRenderer {
         this.ctx.globalAlpha = morphAlpha;
 
         if (this.bionic) {
-          this.drawBionicRuns(block.runs, this.padding * baseScale, drawY, finalFontSize);
+          this.drawBionicRuns(block.runs, pad * baseScale, drawY, finalFontSize, block.isHeading);
         } else {
-          this.drawRuns(block.runs, this.padding * baseScale, drawY, finalFontSize);
+          this.drawRuns(block.runs, pad * baseScale, drawY, finalFontSize, block.isHeading);
         }
 
         this.ctx.restore();
@@ -638,20 +701,24 @@ export class CanvasRenderer {
 
         this.ctx.save();
         this.ctx.globalAlpha = morphAlpha;
-        this.ctx.drawImage(block.canvas, this.padding * baseScale, drawY, drawW, drawH);
+        const imgPad = this.getImagePadding();
+        this.ctx.drawImage(block.canvas, imgPad * baseScale, drawY, drawW, drawH);
         this.ctx.restore();
       }
     }
 
     this.renderBookmarkMarkers(w, h);
+
+    this.ctx.restore(); // end clip
   }
 
   /** Draw runs with link styling */
-  private drawRuns(runs: TextRun[], x: number, y: number, fontSize: number) {
+  private drawRuns(runs: TextRun[], x: number, y: number, fontSize: number, isHeading?: boolean) {
     let cursorX = x;
+    const weight = isHeading ? '600 ' : '';
 
     for (const run of runs) {
-      this.ctx.font = `${fontSize}px ${this.fontFamily}`;
+      this.ctx.font = `${weight}${fontSize}px ${this.fontFamily}`;
 
       if (run.href) {
         // Link styling: blue color + underline
@@ -681,7 +748,7 @@ export class CanvasRenderer {
   }
 
   /** Draw bionic-styled runs (with link support) */
-  private drawBionicRuns(runs: TextRun[], x: number, y: number, fontSize: number) {
+  private drawBionicRuns(runs: TextRun[], x: number, y: number, fontSize: number, _isHeading?: boolean) {
     let cursorX = x;
 
     for (const run of runs) {

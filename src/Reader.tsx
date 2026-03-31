@@ -106,12 +106,16 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
         } catch { /* use local */ }
       }
 
-      if (savedProgress !== null && savedProgress > 0.01 && savedProgress < 0.98) {
+      if (savedProgress !== null && savedProgress > 0.01 && savedProgress < 0.999) {
         renderer.setScrollProgress(savedProgress);
       }
 
-      // Save to library
-      saveLibraryEntry(fileKey, bookData.title, bookData.fileType, savedProgress || 0);
+      // Save to library (local + cloud)
+      const prog = savedProgress || 0;
+      saveLibraryEntry(fileKey, bookData.title, bookData.fileType, prog);
+      if (cloudEnabled && isSignedIn()) {
+        syncBookProgress(fileKey, bookData.title, prog, loadBookmarks(fileKey), bookData.fileType);
+      }
     });
 
     renderer.onProgress = (prog, direction) => {
@@ -124,8 +128,9 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
         hideTimeoutRef.current = setTimeout(() => setProgressBarVisible(false), 800);
       }
       const now = Date.now();
-      if (now - lastSaveTimeRef.current > 500) {
+      if (now - lastSaveTimeRef.current > 500 && prog < 0.999) {
         saveProgress(fileKey, prog);
+        saveLibraryEntry(fileKey, bookData.title, bookData.fileType, prog);
         lastSaveTimeRef.current = now;
       }
       if (cloudEnabled && isSignedIn() && now - lastCloudSyncRef.current > 10000) {
@@ -144,18 +149,8 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
   useEffect(() => { rendererRef.current?.setMode(currentMode); }, [currentMode]);
 
   useEffect(() => {
-    const renderer = rendererRef.current;
-    if (!renderer) return;
-    const savedProgress = renderer.getProgress();
-    renderer.setBionic(bionicEnabled);
-    renderer.setContent(
-      bookData.allText,
-      bionicEnabled ? undefined : (bookData.pageImages.length > 0 ? bookData.pageImages : undefined)
-    );
-    if (savedProgress > 0.001) {
-      renderer.setScrollProgress(savedProgress);
-    }
-  }, [bionicEnabled, bookData]);
+    rendererRef.current?.setBionic(bionicEnabled);
+  }, [bionicEnabled]);
 
   useEffect(() => {
     rendererRef.current?.setBookmarks(bookmarks.map(b => b.position));
@@ -297,57 +292,49 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
       {/* Header */}
       <div className="reader-header">
-        <div className="reader-header-left">
-          <button className="reader-back" onClick={handleBack}>&larr; Back</button>
-          {hasToc && (
-            <div className="toc-group">
-              <button
-                className={`toc-btn${tocOpen ? ' active' : ''}`}
-                ref={tocBtnRef}
-                onClick={() => setTocOpen(prev => !prev)}
-                title="Table of Contents"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <line x1="2" y1="4" x2="14" y2="4"/>
-                  <line x1="2" y1="8" x2="10" y2="8"/>
-                  <line x1="2" y1="12" x2="12" y2="12"/>
-                </svg>
-              </button>
-              <div className={`toc-panel${tocOpen ? ' open' : ''}`} ref={tocPanelRef}>
-                <div className="toc-panel-header">Table of Contents</div>
-                <div className="toc-list">
-                  {bookData.toc.map((entry, i) => (
-                    <div
-                      key={i}
-                      className="toc-item"
-                      style={{ paddingLeft: `${0.8 + entry.level * 1}rem` }}
-                      onClick={() => handleTocNavigate(entry.position)}
-                    >
-                      <span className="toc-item-title">{entry.title}</span>
-                      <span className="toc-item-pos">{Math.round(entry.position * 100)}%</span>
-                    </div>
-                  ))}
+        <div className="reader-header-row1">
+          <div className="reader-header-left">
+            <button className="reader-back" onClick={handleBack}>&larr;</button>
+            {hasToc && (
+              <div className="toc-group">
+                <button
+                  className={`toc-btn${tocOpen ? ' active' : ''}`}
+                  ref={tocBtnRef}
+                  onClick={() => setTocOpen(prev => !prev)}
+                  title="Table of Contents"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <line x1="2" y1="4" x2="14" y2="4"/>
+                    <line x1="2" y1="8" x2="10" y2="8"/>
+                    <line x1="2" y1="12" x2="12" y2="12"/>
+                  </svg>
+                </button>
+                <div className={`toc-panel${tocOpen ? ' open' : ''}`} ref={tocPanelRef}>
+                  <div className="toc-panel-header">Table of Contents</div>
+                  <div className="toc-list">
+                    {bookData.toc.map((entry, i) => (
+                      <div
+                        key={i}
+                        className="toc-item"
+                        style={{ paddingLeft: `${0.8 + entry.level * 1}rem` }}
+                        onClick={() => handleTocNavigate(entry.position)}
+                      >
+                        <span className="toc-item-title">{entry.title}</span>
+                        <span className="toc-item-pos">{Math.round(entry.position * 100)}%</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-        <span className="reader-title">{bookData.title}</span>
-        <div className="reader-controls">
-          <div className="mode-tabs">
-            {modes.map(m => (
-              <button
-                key={m.key}
-                className={`mode-tab${currentMode === m.key ? ' active' : ''}`}
-                onClick={() => handleModeChange(m.key)}
-              >{m.label}</button>
-            ))}
+            )}
+            <span className="reader-title">{bookData.title}</span>
           </div>
-          <label className="bionic-toggle">
-            <span className="bionic-label">Bionic</span>
-            <input type="checkbox" checked={bionicEnabled} onChange={handleBionicChange} />
-            <span className="bionic-slider"></span>
-          </label>
+          <div className="reader-header-actions">
+            <label className="bionic-toggle">
+              <span className="bionic-label">Bionic</span>
+              <input type="checkbox" checked={bionicEnabled} onChange={handleBionicChange} />
+              <span className="bionic-slider"></span>
+            </label>
           <div className="bookmark-group">
             <button className="bookmark-btn" ref={bookmarkBtnRef} title="Add bookmark"
               onClick={handleBookmarkClick} onContextMenu={handleBookmarkContextMenu}>
@@ -382,6 +369,18 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
               </svg>
             </button>
           )}
+          </div>
+        </div>
+        <div className="reader-header-row2">
+          <div className="mode-tabs">
+            {modes.map(m => (
+              <button
+                key={m.key}
+                className={`mode-tab${currentMode === m.key ? ' active' : ''}`}
+                onClick={() => handleModeChange(m.key)}
+              >{m.label}</button>
+            ))}
+          </div>
         </div>
       </div>
 

@@ -241,6 +241,99 @@ export async function loadCloudLibrary(): Promise<CloudBookData[]> {
   } catch { return []; }
 }
 
+// ── Book file storage ──
+
+/** Generate a safe filename for a book in Drive */
+function bookFileName(fileKey: string): string {
+  let hash = 0;
+  for (let i = 0; i < fileKey.length; i++) {
+    hash = ((hash << 5) - hash) + fileKey.charCodeAt(i);
+    hash |= 0;
+  }
+  return `book-${Math.abs(hash).toString(36)}.bin`;
+}
+
+/** Upload a book file to Google Drive appDataFolder */
+export async function saveBookFile(fileKey: string, file: File): Promise<void> {
+  if (!accessToken) return;
+
+  try {
+    const name = bookFileName(fileKey);
+
+    // Check if already uploaded
+    const existingId = await findFileByName(name);
+    if (existingId) return; // Already saved
+
+    const metadata = { name, parents: ['appDataFolder'] };
+    const arrayBuffer = await file.arrayBuffer();
+
+    const form = new FormData();
+    form.append(
+      'metadata',
+      new Blob([JSON.stringify(metadata)], { type: 'application/json' })
+    );
+    form.append(
+      'file',
+      new Blob([arrayBuffer], { type: file.type || 'application/octet-stream' })
+    );
+
+    const res = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+      }
+    );
+    if (!res.ok) throw new Error(`Upload failed ${res.status}`);
+  } catch (err) {
+    console.warn('[google-drive] Failed to save book file:', err);
+  }
+}
+
+/** Download a book file from Google Drive */
+export async function loadBookFile(fileKey: string): Promise<File | null> {
+  if (!accessToken) return null;
+
+  try {
+    const name = bookFileName(fileKey);
+    const fileId = await findFileByName(name);
+    if (!fileId) return null;
+
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!res.ok) return null;
+
+    const blob = await res.blob();
+    // Extract original filename from fileKey: "ebook:filename.ext:size"
+    const parts = fileKey.split(':');
+    const fileName = parts.length >= 2 ? parts[1] : 'book';
+    return new File([blob], fileName, { type: blob.type });
+  } catch (err) {
+    console.warn('[google-drive] Failed to load book file:', err);
+    return null;
+  }
+}
+
+/** Check if a book file exists in Drive */
+export async function hasBookFile(fileKey: string): Promise<boolean> {
+  if (!accessToken) return false;
+  try {
+    const name = bookFileName(fileKey);
+    const id = await findFileByName(name);
+    return !!id;
+  } catch { return false; }
+}
+
+async function findFileByName(name: string): Promise<string | null> {
+  const data = await driveGet(
+    `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${name}'&fields=files(id)`
+  );
+  return data.files?.[0]?.id || null;
+}
+
 // ── Utility ──
 
 function loadScript(src: string): Promise<void> {

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BookData } from './pdf-extractor';
 import { extractPdf } from './pdf-extractor';
 import { extractEpub } from './epub-extractor';
-import { isSignedIn, loadCloudLibrary } from './google-drive';
+import { isSignedIn, loadCloudLibrary, loadBookFile } from './google-drive';
 import { LibraryEntry, loadLocalLibrary, mergeLibraries, removeLibraryEntry } from './library-storage';
 
 interface LibraryProps {
@@ -11,7 +11,6 @@ interface LibraryProps {
   driveSignedIn: boolean;
 }
 
-/** Generate a deterministic color from a string */
 function titleColor(title: string): string {
   let hash = 0;
   for (let i = 0; i < title.length; i++) {
@@ -38,7 +37,8 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
-  const [selectedEntry, setSelectedEntry] = useState<LibraryEntry | null>(null);
+  const [processingMsg, setProcessingMsg] = useState('');
+  const [needsUpload, setNeedsUpload] = useState<LibraryEntry | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -67,43 +67,68 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
     load();
   }, [driveSignedIn]);
 
-  const handleCardClick = useCallback((entry: LibraryEntry) => {
-    setSelectedEntry(entry);
-    fileInputRef.current?.click();
-  }, []);
+  const openFile = useCallback(async (file: File, fileKey: string) => {
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    let bookData: BookData;
+
+    if (ext === 'pdf') {
+      bookData = await extractPdf(file, (cur, total) => {
+        setProcessingMsg(`Page ${cur} of ${total}`);
+      });
+    } else if (ext === 'epub') {
+      setProcessingMsg('Extracting chapters...');
+      bookData = await extractEpub(file);
+    } else {
+      throw new Error('Unsupported file type');
+    }
+
+    onFileLoaded(bookData, fileKey);
+  }, [onFileLoaded]);
+
+  const handleCardClick = useCallback(async (entry: LibraryEntry) => {
+    setProcessing(true);
+    setProcessingMsg('Loading from Google Drive...');
+
+    try {
+      // Try loading from Google Drive first
+      if (driveSignedIn && isSignedIn()) {
+        const file = await loadBookFile(entry.fileKey);
+        if (file) {
+          setProcessingMsg('Processing...');
+          await openFile(file, entry.fileKey);
+          return;
+        }
+      }
+
+      // Not in Drive — ask user to re-upload
+      setProcessing(false);
+      setNeedsUpload(entry);
+      fileInputRef.current?.click();
+    } catch (err) {
+      console.error('Failed to open book:', err);
+      alert('Failed to open book.');
+      setProcessing(false);
+    }
+  }, [driveSignedIn, openFile]);
 
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) { setSelectedEntry(null); return; }
+    if (!file) { setNeedsUpload(null); return; }
 
     setProcessing(true);
+    setProcessingMsg('Processing...');
     try {
-      const ext = file.name.split('.').pop()?.toLowerCase();
-      let bookData: BookData;
-
-      if (ext === 'pdf') {
-        bookData = await extractPdf(file);
-      } else if (ext === 'epub') {
-        bookData = await extractEpub(file);
-      } else {
-        alert('Unsupported file type.');
-        setProcessing(false);
-        setSelectedEntry(null);
-        return;
-      }
-
       const fileKey = `ebook:${file.name}:${file.size}`;
-      onFileLoaded(bookData, fileKey);
+      await openFile(file, fileKey);
     } catch (err) {
       console.error('Failed to load file:', err);
       alert('Failed to load file.');
       setProcessing(false);
-      setSelectedEntry(null);
+      setNeedsUpload(null);
     }
 
-    // Reset input so re-selecting the same file triggers onChange
     e.target.value = '';
-  }, [onFileLoaded]);
+  }, [openFile]);
 
   const handleRemove = useCallback((e: React.MouseEvent, entry: LibraryEntry) => {
     e.stopPropagation();
@@ -115,6 +140,7 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
     return (
       <div className="loading-overlay">
         <div className="loading-spinner"></div>
+        {processingMsg && <div className="loading-progress">{processingMsg}</div>}
       </div>
     );
   }
@@ -137,9 +163,9 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
         </div>
       ) : (
         <>
-          {selectedEntry && (
+          {needsUpload && (
             <div className="library-reupload-hint">
-              Re-upload <strong>{selectedEntry.title}</strong> to continue reading
+              Re-upload <strong>{needsUpload.title}</strong> to continue reading
             </div>
           )}
           <div className="library-grid">

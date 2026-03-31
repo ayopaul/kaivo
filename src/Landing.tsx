@@ -2,6 +2,8 @@ import React, { useRef, useState, useCallback } from 'react';
 import { BookData } from './pdf-extractor';
 import { extractPdf } from './pdf-extractor';
 import { extractEpub } from './epub-extractor';
+import { isSignedIn, saveBookFile, syncBookProgress } from './google-drive';
+import { saveLibraryEntry } from './library-storage';
 
 interface LandingProps {
   onFileLoaded: (bookData: BookData, fileKey: string) => void;
@@ -48,6 +50,16 @@ const Landing: React.FC<LandingProps> = ({
       }
 
       const fileKey = `ebook:${file.name}:${file.size}`;
+
+      // Save to library immediately
+      saveLibraryEntry(fileKey, bookData.title, bookData.fileType, 0);
+
+      // Save book file + library to Google Drive in background
+      if (driveSignedIn && isSignedIn()) {
+        saveBookFile(fileKey, file);
+        syncBookProgress(fileKey, bookData.title, 0, [], bookData.fileType);
+      }
+
       onFileLoaded(bookData, fileKey);
     } catch (err) {
       console.error('Failed to load file:', err);
