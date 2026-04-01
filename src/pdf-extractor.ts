@@ -1,13 +1,14 @@
 const PDFJS_VERSION = '4.8.69';
+const PDFJS_CDN = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}`;
 let pdfjsLib: any = null;
 
 async function getPdfjs() {
   if (pdfjsLib) return pdfjsLib;
 
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  pdfjsLib = pdfjs;
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/legacy/build/pdf.worker.min.mjs`;
+  // Load from CDN to bypass Next.js webpack chunking issues
+  // @ts-ignore — runtime URL import, not a module path
+  pdfjsLib = await import(/* webpackIgnore: true */ `${PDFJS_CDN}/legacy/build/pdf.mjs`);
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/legacy/build/pdf.worker.min.mjs`;
   return pdfjsLib;
 }
 

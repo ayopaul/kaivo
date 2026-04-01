@@ -107,8 +107,18 @@ export class CanvasRenderer {
   // Link regions for click detection
   private linkRegions: LinkRegion[] = [];
 
+  // Text selection
+  private selectionStart: { block: number; charIndex: number } | null = null;
+  private selectionEnd: { block: number; charIndex: number } | null = null;
+  private isSelecting = false;
+  private cursorPosition: { block: number; charIndex: number } | null = null;
+  private cursorVisible = true;
+  private cursorBlinkTimer = 0;
+
   // Callbacks
   onProgress?: (progress: number, direction: 'up' | 'down') => void;
+  onCursorChange?: (charOffset: number) => void;
+  onTextSelected?: (text: string) => void;
 
   // Bound handlers
   private _onWheel!: (e: WheelEvent) => void;
@@ -118,6 +128,10 @@ export class CanvasRenderer {
   private _onResize!: () => void;
   private _onClick!: (e: MouseEvent) => void;
   private _onMouseMove!: (e: MouseEvent) => void;
+  private _onMouseDown!: (e: MouseEvent) => void;
+  private _onMouseUp!: (e: MouseEvent) => void;
+  private _onDblClick!: (e: MouseEvent) => void;
+  private _onKeyDown!: (e: KeyboardEvent) => void;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -452,6 +466,10 @@ export class CanvasRenderer {
     this._onResize = this.onResize.bind(this);
     this._onClick = this.onClick.bind(this);
     this._onMouseMove = this.onMouseMove.bind(this);
+    this._onMouseDown = this.onMouseDown.bind(this);
+    this._onMouseUp = this.onMouseUp.bind(this);
+    this._onDblClick = this.onDblClick.bind(this);
+    this._onKeyDown = this.onKeyDown.bind(this);
 
     this.canvas.addEventListener('wheel', this._onWheel, { passive: false });
     this.canvas.addEventListener('touchstart', this._onTouchStart, { passive: false });
@@ -459,8 +477,17 @@ export class CanvasRenderer {
     this.canvas.addEventListener('touchend', this._onTouchEnd);
     this.canvas.addEventListener('touchcancel', this._onTouchEnd);
     this.canvas.addEventListener('click', this._onClick);
+    this.canvas.addEventListener('mousedown', this._onMouseDown);
     this.canvas.addEventListener('mousemove', this._onMouseMove);
+    this.canvas.addEventListener('mouseup', this._onMouseUp);
+    this.canvas.addEventListener('dblclick', this._onDblClick);
+    document.addEventListener('keydown', this._onKeyDown);
     window.addEventListener('resize', this._onResize);
+
+    // Cursor blink
+    this.cursorBlinkTimer = window.setInterval(() => {
+      this.cursorVisible = !this.cursorVisible;
+    }, 530);
   }
 
   private unbindEvents() {
@@ -470,8 +497,13 @@ export class CanvasRenderer {
     this.canvas.removeEventListener('touchend', this._onTouchEnd);
     this.canvas.removeEventListener('touchcancel', this._onTouchEnd);
     this.canvas.removeEventListener('click', this._onClick);
+    this.canvas.removeEventListener('mousedown', this._onMouseDown);
     this.canvas.removeEventListener('mousemove', this._onMouseMove);
+    this.canvas.removeEventListener('mouseup', this._onMouseUp);
+    this.canvas.removeEventListener('dblclick', this._onDblClick);
+    document.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('resize', this._onResize);
+    clearInterval(this.cursorBlinkTimer);
   }
 
   private onWheel(e: WheelEvent) {
@@ -539,8 +571,146 @@ export class CanvasRenderer {
     }
   }
 
-  /** Convert canvas click coordinates to content space and check for link hits */
+  /** Find which block and character position a screen point maps to */
+  private hitTestText(screenX: number, screenY: number): { block: number; charIndex: number } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = screenX - rect.left;
+    const y = screenY - rect.top;
+
+    const baseScale = (this.mode === 'pinch' || this.mode === 'combined') ? this.pinchScale : 1;
+    const pad = this.getPadding();
+
+    for (let bi = 0; bi < this.blocks.length; bi++) {
+      const block = this.blocks[bi];
+      if (block.kind !== 'text') continue;
+
+      const drawY = block.y * baseScale - this.scrollY;
+      const lineH = block.baseFontSize * this.lineHeight * baseScale;
+      if (y < drawY - lineH || y > drawY + lineH * 0.3) continue;
+
+      // Found the line — now find character position
+      this.ctx.font = `${block.isHeading ? '600 ' : ''}${block.baseFontSize * baseScale}px ${this.fontFamily}`;
+      const lineText = block.runs.map(r => r.text).join('');
+      const startX = pad * baseScale;
+
+      for (let ci = 0; ci <= lineText.length; ci++) {
+        const textW = this.ctx.measureText(lineText.slice(0, ci)).width;
+        const nextW = ci < lineText.length ? this.ctx.measureText(lineText.slice(0, ci + 1)).width : textW;
+        const midX = startX + (textW + nextW) / 2;
+        if (x <= midX || ci === lineText.length) {
+          return { block: bi, charIndex: ci };
+        }
+      }
+
+      return { block: bi, charIndex: lineText.length };
+    }
+    return null;
+  }
+
+  /** Get the plain text of a block */
+  private getBlockText(blockIndex: number): string {
+    const block = this.blocks[blockIndex];
+    if (!block || block.kind !== 'text') return '';
+    return block.runs.map(r => r.text).join('');
+  }
+
+  /** Get selected text between selectionStart and selectionEnd */
+  getSelectedText(): string {
+    if (!this.selectionStart || !this.selectionEnd) return '';
+
+    let start = this.selectionStart;
+    let end = this.selectionEnd;
+    if (start.block > end.block || (start.block === end.block && start.charIndex > end.charIndex)) {
+      [start, end] = [end, start];
+    }
+
+    const parts: string[] = [];
+    for (let bi = start.block; bi <= end.block; bi++) {
+      const text = this.getBlockText(bi);
+      if (!text) continue;
+      const s = bi === start.block ? start.charIndex : 0;
+      const e = bi === end.block ? end.charIndex : text.length;
+      parts.push(text.slice(s, e));
+    }
+    return parts.join('\n');
+  }
+
+  /** Get the cumulative character offset of the cursor position */
+  getCursorCharOffset(): number {
+    if (!this.cursorPosition) return 0;
+    let offset = 0;
+    for (let bi = 0; bi < this.cursorPosition.block; bi++) {
+      const text = this.getBlockText(bi);
+      if (text) offset += text.length + 1; // +1 for line break
+    }
+    offset += this.cursorPosition.charIndex;
+    return offset;
+  }
+
+  private onMouseDown(e: MouseEvent) {
+    // Don't start selection if it's a touch device simulating mouse
+    if (e.button !== 0) return;
+
+    const hit = this.hitTestText(e.clientX, e.clientY);
+    if (!hit) return;
+
+    this.isSelecting = true;
+    this.selectionStart = hit;
+    this.selectionEnd = hit;
+    this.cursorPosition = hit;
+    this.cursorVisible = true;
+    this.onCursorChange?.(this.getCursorCharOffset());
+  }
+
+  private onMouseUp(_e: MouseEvent) {
+    if (!this.isSelecting) return;
+    this.isSelecting = false;
+
+    const selectedText = this.getSelectedText();
+    if (selectedText.length > 0) {
+      this.onTextSelected?.(selectedText);
+    }
+  }
+
+  private onDblClick(e: MouseEvent) {
+    const hit = this.hitTestText(e.clientX, e.clientY);
+    if (!hit) return;
+
+    // Select the word at the cursor
+    const text = this.getBlockText(hit.block);
+    if (!text) return;
+
+    let wordStart = hit.charIndex;
+    let wordEnd = hit.charIndex;
+
+    // Expand backward to word boundary
+    while (wordStart > 0 && /\w/.test(text[wordStart - 1])) wordStart--;
+    // Expand forward to word boundary
+    while (wordEnd < text.length && /\w/.test(text[wordEnd])) wordEnd++;
+
+    if (wordStart < wordEnd) {
+      this.selectionStart = { block: hit.block, charIndex: wordStart };
+      this.selectionEnd = { block: hit.block, charIndex: wordEnd };
+      this.onTextSelected?.(text.slice(wordStart, wordEnd));
+    }
+  }
+
+  private onKeyDown(e: KeyboardEvent) {
+    // Ctrl+C or Cmd+C to copy
+    if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+      const text = this.getSelectedText();
+      if (text) {
+        navigator.clipboard.writeText(text).catch(() => {});
+        e.preventDefault();
+      }
+    }
+  }
+
+  /** Handle click — open links or place cursor */
   private onClick(e: MouseEvent) {
+    // If text was selected via drag, don't process as a click
+    if (this.getSelectedText().length > 0) return;
+
     const rect = this.canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
@@ -548,10 +718,10 @@ export class CanvasRenderer {
     const baseScale = (this.mode === 'pinch' || this.mode === 'combined')
       ? this.pinchScale : 1;
 
-    // Convert screen coords to layout coords
     const layoutX = clickX / baseScale;
     const layoutY = (clickY + this.scrollY) / baseScale;
 
+    // Check links
     for (const region of this.linkRegions) {
       if (
         layoutX >= region.x &&
@@ -565,8 +735,19 @@ export class CanvasRenderer {
     }
   }
 
-  /** Update cursor on hover over links */
+  /** Update cursor style and handle drag selection */
   private onMouseMove(e: MouseEvent) {
+    // Handle drag selection
+    if (this.isSelecting) {
+      const hit = this.hitTestText(e.clientX, e.clientY);
+      if (hit) {
+        this.selectionEnd = hit;
+        this.cursorPosition = hit;
+      }
+      this.canvas.style.cursor = 'text';
+      return;
+    }
+
     const rect = this.canvas.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
@@ -577,6 +758,7 @@ export class CanvasRenderer {
     const layoutX = mouseX / baseScale;
     const layoutY = (mouseY + this.scrollY) / baseScale;
 
+    // Check if over a link
     let overLink = false;
     for (const region of this.linkRegions) {
       if (
@@ -590,7 +772,10 @@ export class CanvasRenderer {
       }
     }
 
-    this.canvas.style.cursor = overLink ? 'pointer' : 'default';
+    // Check if over text
+    const overText = this.hitTestText(e.clientX, e.clientY) !== null;
+
+    this.canvas.style.cursor = overLink ? 'pointer' : overText ? 'text' : 'default';
   }
 
   private getTouchDist(touches: TouchList): number {
@@ -709,9 +894,78 @@ export class CanvasRenderer {
       }
     }
 
+    // Render text selection highlight and cursor
+    this.renderSelection(pad, h);
+
     this.renderBookmarkMarkers(w, h);
 
     this.ctx.restore(); // end clip
+  }
+
+  private renderSelection(pad: number, viewH: number) {
+    const baseScale = (this.mode === 'pinch' || this.mode === 'combined') ? this.pinchScale : 1;
+
+    // Draw selection highlight
+    if (this.selectionStart && this.selectionEnd) {
+      let start = this.selectionStart;
+      let end = this.selectionEnd;
+      if (start.block > end.block || (start.block === end.block && start.charIndex > end.charIndex)) {
+        [start, end] = [end, start];
+      }
+
+      this.ctx.save();
+      this.ctx.fillStyle = 'rgba(100, 149, 237, 0.3)';
+
+      for (let bi = start.block; bi <= end.block; bi++) {
+        const block = this.blocks[bi];
+        if (!block || block.kind !== 'text') continue;
+
+        const drawY = block.y * baseScale - this.scrollY;
+        if (drawY < -100 || drawY > viewH + 100) continue;
+
+        const fontSize = block.baseFontSize * baseScale;
+        this.ctx.font = `${block.isHeading ? '600 ' : ''}${fontSize}px ${this.fontFamily}`;
+        const lineText = block.runs.map(r => r.text).join('');
+        const startX = pad * baseScale;
+
+        const s = bi === start.block ? start.charIndex : 0;
+        const e = bi === end.block ? end.charIndex : lineText.length;
+
+        if (s === e) continue;
+
+        const x1 = startX + this.ctx.measureText(lineText.slice(0, s)).width;
+        const x2 = startX + this.ctx.measureText(lineText.slice(0, e)).width;
+        const lineH = fontSize * this.lineHeight;
+
+        this.ctx.fillRect(x1, drawY - fontSize, x2 - x1, lineH);
+      }
+
+      this.ctx.restore();
+    }
+
+    // Draw blinking cursor
+    if (this.cursorPosition && this.cursorVisible && !this.getSelectedText()) {
+      const block = this.blocks[this.cursorPosition.block];
+      if (block && block.kind === 'text') {
+        const drawY = block.y * baseScale - this.scrollY;
+        if (drawY > -100 && drawY < viewH + 100) {
+          const fontSize = block.baseFontSize * baseScale;
+          this.ctx.font = `${block.isHeading ? '600 ' : ''}${fontSize}px ${this.fontFamily}`;
+          const lineText = block.runs.map(r => r.text).join('');
+          const startX = pad * baseScale;
+          const cursorX = startX + this.ctx.measureText(lineText.slice(0, this.cursorPosition.charIndex)).width;
+
+          this.ctx.save();
+          this.ctx.strokeStyle = '#e8e8e8';
+          this.ctx.lineWidth = 1.5;
+          this.ctx.beginPath();
+          this.ctx.moveTo(cursorX, drawY - fontSize);
+          this.ctx.lineTo(cursorX, drawY + fontSize * 0.2);
+          this.ctx.stroke();
+          this.ctx.restore();
+        }
+      }
+    }
   }
 
   /** Draw runs with link styling */

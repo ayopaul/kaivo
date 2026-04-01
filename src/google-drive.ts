@@ -10,7 +10,7 @@
  * 6. Copy the Client ID and paste it below
  */
 
-const CLIENT_ID = '1043767613653-9dv2u4245dm5sdi591of74jrg5j3dn9p.apps.googleusercontent.com';
+const CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
 const PROGRESS_FILE = 'ebook-reader-progress.json';
@@ -48,12 +48,24 @@ export async function initGoogleAuth(): Promise<void> {
   if (gisLoaded) return;
 
   await loadScript('https://accounts.google.com/gsi/client');
+
+  // Wait for google.accounts to be available
+  for (let i = 0; i < 50; i++) {
+    if ((window as any).google?.accounts?.oauth2) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  if (!(window as any).google?.accounts?.oauth2) {
+    console.warn('[google-drive] GIS failed to initialize');
+    return;
+  }
+
   gisLoaded = true;
 
   tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
     scope: SCOPES,
-    callback: () => {}, // overridden per-call in signIn()
+    callback: () => {},
   });
 }
 
@@ -91,10 +103,15 @@ export function signOut(): void {
 // ── Drive file operations ──
 
 async function driveGet(url: string): Promise<any> {
+  console.log('[google-drive] GET', url.replace(/Bearer\s\S+/, 'Bearer ***'));
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!res.ok) throw new Error(`Drive API ${res.status}: ${res.statusText}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error(`[google-drive] GET failed ${res.status}: ${res.statusText}`, body);
+    throw new Error(`Drive API ${res.status}: ${res.statusText}`);
+  }
   return res.json();
 }
 
@@ -108,16 +125,22 @@ async function findProgressFile(): Promise<string | null> {
 
 /** Read the progress file contents */
 async function readFile(fileId: string): Promise<CloudProgressData> {
+  console.log('[google-drive] Reading file', fileId);
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
-  if (!res.ok) throw new Error(`Drive read ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error(`[google-drive] Read failed ${res.status}`, body);
+    throw new Error(`Drive read ${res.status}`);
+  }
   return res.json();
 }
 
 /** Create a new progress file in appDataFolder */
 async function createFile(content: CloudProgressData): Promise<string> {
+  console.log('[google-drive] Creating progress file');
   const metadata = { name: PROGRESS_FILE, parents: ['appDataFolder'] };
 
   const form = new FormData();
@@ -138,13 +161,19 @@ async function createFile(content: CloudProgressData): Promise<string> {
       body: form,
     }
   );
-  if (!res.ok) throw new Error(`Drive create ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error(`[google-drive] Create failed ${res.status}`, body);
+    throw new Error(`Drive create ${res.status}`);
+  }
   const data = await res.json();
+  console.log('[google-drive] Created file', data.id);
   return data.id;
 }
 
 /** Update an existing progress file */
 async function updateFile(fileId: string, content: CloudProgressData): Promise<void> {
+  console.log('[google-drive] Updating file', fileId);
   const res = await fetch(
     `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
     {
@@ -156,7 +185,11 @@ async function updateFile(fileId: string, content: CloudProgressData): Promise<v
       body: JSON.stringify(content),
     }
   );
-  if (!res.ok) throw new Error(`Drive update ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error(`[google-drive] Update failed ${res.status}`, body);
+    throw new Error(`Drive update ${res.status}`);
+  }
 }
 
 // ── High-level API ──
@@ -191,7 +224,8 @@ export async function saveCloudProgress(data: CloudProgressData): Promise<void> 
   }
 }
 
-/** Save progress for a single book (reads existing cloud data, merges, writes back) */
+/** Save progress for a single book (reads existing cloud data, merges, writes back).
+ *  Retries once on failure. */
 export async function syncBookProgress(
   fileKey: string,
   title: string,
@@ -201,7 +235,7 @@ export async function syncBookProgress(
 ): Promise<void> {
   if (!accessToken) return;
 
-  try {
+  const attempt = async () => {
     const existing = (await loadCloudProgress()) || { books: {} };
     existing.books[fileKey] = {
       progress,
@@ -212,8 +246,17 @@ export async function syncBookProgress(
       fileType,
     };
     await saveCloudProgress(existing);
+  };
+
+  try {
+    await attempt();
   } catch (err) {
-    console.warn('[google-drive] Failed to sync book progress:', err);
+    console.warn('[google-drive] syncBookProgress failed, retrying once...', err);
+    try {
+      await attempt();
+    } catch (retryErr) {
+      console.error('[google-drive] syncBookProgress retry also failed:', retryErr);
+    }
   }
 }
 
@@ -224,7 +267,8 @@ export async function loadBookProgress(fileKey: string): Promise<CloudBookData |
   try {
     const data = await loadCloudProgress();
     return data?.books?.[fileKey] || null;
-  } catch {
+  } catch (err) {
+    console.warn('[google-drive] Failed to load book progress for', fileKey, err);
     return null;
   }
 }
