@@ -54,10 +54,13 @@ const Landing: React.FC<LandingProps> = ({
       // Save to library immediately
       saveLibraryEntry(fileKey, bookData.title, bookData.fileType, 0);
 
-      // Save book file + library to Google Drive in background
+      // Save book file to Google Drive (wait for it to complete)
       if (driveSignedIn && isSignedIn()) {
-        saveBookFile(fileKey, file).catch(err => console.warn('[Landing] saveBookFile failed:', err));
-        syncBookProgress(fileKey, bookData.title, 0, [], bookData.fileType).catch(err => console.warn('[Landing] syncBookProgress failed:', err));
+        setLoadingProgress('Saving to Google Drive...');
+        await Promise.all([
+          saveBookFile(fileKey, file).catch(err => console.warn('[Landing] saveBookFile failed:', err)),
+          syncBookProgress(fileKey, bookData.title, 0, [], bookData.fileType).catch(err => console.warn('[Landing] syncBookProgress failed:', err)),
+        ]);
       }
 
       onFileLoaded(bookData, fileKey);

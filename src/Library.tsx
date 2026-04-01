@@ -38,7 +38,6 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [processingMsg, setProcessingMsg] = useState('');
-  const [needsUpload, setNeedsUpload] = useState<LibraryEntry | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -100,9 +99,8 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
         }
       }
 
-      // Not in Drive — ask user to re-upload
+      // Not in Drive — open file picker silently
       setProcessing(false);
-      setNeedsUpload(entry);
       fileInputRef.current?.click();
     } catch (err) {
       console.error('Failed to open book:', err);
@@ -113,7 +111,7 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
 
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) { setNeedsUpload(null); return; }
+    if (!file) { /* */; return; }
 
     setProcessing(true);
     setProcessingMsg('Processing...');
@@ -124,7 +122,7 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
       console.error('Failed to load file:', err);
       alert('Failed to load file.');
       setProcessing(false);
-      setNeedsUpload(null);
+      /* */;
     }
 
     e.target.value = '';
@@ -163,11 +161,6 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
         </div>
       ) : (
         <>
-          {needsUpload && (
-            <div className="library-reupload-hint">
-              Re-upload <strong>{needsUpload.title}</strong> to continue reading
-            </div>
-          )}
           <div className="library-grid">
             {entries.map(entry => (
               <div
