@@ -11,6 +11,9 @@ interface TextLine {
   y: number;
   baseFontSize: number;
   isHeading?: boolean;
+  justified?: boolean; // if true, spread extra space between words
+  extraWordSpacing?: number; // px to add between each word for justification
+  charOffset?: number; // cumulative character offset in full text for highlight syncing
 }
 
 interface ImageBlock {
@@ -72,6 +75,13 @@ export class CanvasRenderer {
   private padding = 40;
   private pageGap = 30;
   private fontFamily = "'Inter', system-ui, sans-serif";
+  private fontWeight = 400;
+
+  // Word highlighting for TTS
+  private highlightedWordOffset: number | null = null;
+  private highlightRect = { x: 0, y: 0, w: 0, h: 0, opacity: 0 };
+  private highlightTarget = { x: 0, y: 0, w: 0, h: 0 };
+  private smoothScrolling = false; // true when TTS auto-scroll is active
 
   /** Compute padding based on viewport width */
   private getPadding(): number {
@@ -182,6 +192,87 @@ export class CanvasRenderer {
 
   setBionic(enabled: boolean) {
     this.bionic = enabled;
+  }
+
+  setFontFamily(family: string) {
+    this.fontFamily = family;
+    // Re-layout preserving progress
+    if (this.rawText || (this.rawPageImages && this.rawPageImages.length > 0)) {
+      const savedProgress = this.getProgress();
+      this.blocks = [];
+      this.linkRegions = [];
+      const viewWidth = this.canvas.getBoundingClientRect().width;
+      if (this.rawPageImages && this.rawPageImages.length > 0) {
+        this.layoutImages(this.rawPageImages, viewWidth);
+      } else {
+        const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
+        const morphFactor = isMorph ? this.morphStrength : 1;
+        this.layoutText(this.rawText, viewWidth / morphFactor / this.pinchScale);
+      }
+      if (savedProgress > 0.001) {
+        this.setScrollProgress(savedProgress);
+      }
+    }
+  }
+
+  setFontWeight(weight: number) {
+    this.fontWeight = weight;
+    // Re-layout preserving progress
+    if (this.rawText || (this.rawPageImages && this.rawPageImages.length > 0)) {
+      const savedProgress = this.getProgress();
+      this.blocks = [];
+      this.linkRegions = [];
+      const viewWidth = this.canvas.getBoundingClientRect().width;
+      if (this.rawPageImages && this.rawPageImages.length > 0) {
+        this.layoutImages(this.rawPageImages, viewWidth);
+      } else {
+        const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
+        const morphFactor = isMorph ? this.morphStrength : 1;
+        this.layoutText(this.rawText, viewWidth / morphFactor / this.pinchScale);
+      }
+      if (savedProgress > 0.001) {
+        this.setScrollProgress(savedProgress);
+      }
+    }
+  }
+
+  setHighlightedWord(charOffset: number | null) {
+    this.highlightedWordOffset = charOffset;
+    // Auto-scroll to keep highlighted word in the morph-enlarged center zone
+    if (charOffset !== null) {
+      const baseScale = (this.mode === 'pinch' || this.mode === 'combined') ? this.pinchScale : 1;
+      const viewH = this.canvas.getBoundingClientRect().height;
+      const centerY = viewH / 2;
+      const morphZone = viewH * this.morphRadius * 0.6; // tight zone around center
+
+      for (const block of this.blocks) {
+        if (block.kind !== 'text') continue;
+        const blockStart = block.charOffset ?? 0;
+        const lineText = block.runs.map(r => r.text).join('');
+        if (charOffset >= blockStart && charOffset < blockStart + lineText.length) {
+          const drawY = block.y * baseScale - this.scrollY;
+          // Scroll if word is outside the morph center zone
+          if (Math.abs(drawY - centerY) > morphZone) {
+            this.targetScrollY = block.y * baseScale - centerY;
+            this.clampScroll();
+            this.smoothScrolling = true;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /** Get the character range of the word containing the given offset */
+  private getWordAtOffset(offset: number): { start: number; end: number } | null {
+    const text = this.stripMarkers(this.rawText);
+    if (offset < 0 || offset >= text.length) return null;
+    let start = offset;
+    let end = offset;
+    while (start > 0 && /\S/.test(text[start - 1])) start--;
+    while (end < text.length && /\S/.test(text[end])) end++;
+    if (start === end) return null;
+    return { start, end };
   }
 
   setBookmarks(positions: number[]) {
@@ -305,40 +396,61 @@ export class CanvasRenderer {
     return runs;
   }
 
-  /** Strip link and heading markers for plain text measurement */
+  /** Strip link, heading, and page break markers for plain text measurement */
   private stripMarkers(text: string): string {
-    return text.replace(/\x01[^\x02]*\x02([^\x03]*)\x03/g, '$1').replace(/\x04/g, '');
+    return text.replace(/\x01[^\x02]*\x02([^\x03]*)\x03/g, '$1').replace(/\x04/g, '').replace(/\x05/g, '');
   }
 
   private layoutText(text: string, viewWidth: number) {
     const pad = this.getPadding();
     const maxWidth = viewWidth - pad * 2;
     const fontSize = this.baseFontSize;
-    this.ctx.font = `${fontSize}px ${this.fontFamily}`;
+    const weightStr = this.fontWeight.toString();
+    this.ctx.font = `${weightStr} ${fontSize}px ${this.fontFamily}`;
 
     let y = pad;
     const paragraphs = text.split(/\n+/);
 
+    // Build the same stripped text the voice reader produces, to compute matching global offsets.
+    // Voice reader: strip markers, split on \n\n+, rejoin with \n\n (implicit +2 gap per chunk).
+    const stripped = text
+      .replace(/\x01[^\x02]*\x02([^\x03]*)\x03/g, '$1')
+      .replace(/[\x01-\x05]/g, '');
+    const strippedFull = stripped.split(/\n\n+/).map(c => c.trim()).filter(c => c.length > 0).join('\n\n');
+    let strippedCursor = 0; // current position in strippedFull
+
     for (let pIdx = 0; pIdx < paragraphs.length; pIdx++) {
       let para = paragraphs[pIdx];
+
+      // Detect page break marker
+      if (para.trim() === '\x05') {
+        y += fontSize * this.lineHeight * 3;
+        continue;
+      }
 
       // Detect heading marker
       const isHeading = para.startsWith('\x04');
       if (isHeading) para = para.slice(1);
 
-      if (this.stripMarkers(para).trim() === '') {
+      const strippedPara = this.stripMarkers(para).trim();
+      if (strippedPara === '') {
         y += fontSize * this.lineHeight * 0.5;
         continue;
       }
 
-      // Extra space before headings
+      // Find this paragraph's position in the stripped full text
+      const paraPos = strippedFull.indexOf(strippedPara, strippedCursor);
+      const globalCharOffset = paraPos >= 0 ? paraPos : strippedCursor;
+
+      // Extra space before headings (1.2x lineHeight)
       if (isHeading && pIdx > 0) {
-        y += fontSize * this.lineHeight * 0.8;
+        y += fontSize * this.lineHeight * 1.2;
       }
 
-      // Headings use 1.4x font size
-      const paraFontSize = isHeading ? fontSize * 1.4 : fontSize;
-      this.ctx.font = `${isHeading ? '600 ' : ''}${paraFontSize}px ${this.fontFamily}`;
+      // Headings use 1.6x font size
+      const paraFontSize = isHeading ? fontSize * 1.6 : fontSize;
+      const paraWeight = isHeading ? '600' : weightStr;
+      this.ctx.font = `${paraWeight} ${paraFontSize}px ${this.fontFamily}`;
 
       // Parse paragraph into runs, then tokenize into words preserving run info
       const runs = this.parseRuns(para);
@@ -354,11 +466,32 @@ export class CanvasRenderer {
       // Word-wrap tokens into lines
       let lineRuns: TextRun[] = [];
       let lineWidth = 0;
+      let cumulativeCharOffset = globalCharOffset; // track position in stripped full text
 
-      const flushLine = () => {
+      const flushLine = (isWrapped: boolean) => {
         if (lineRuns.length === 0) return;
         const merged = this.mergeRuns(lineRuns);
-        this.blocks.push({ kind: 'text', runs: merged, y, baseFontSize: paraFontSize, isHeading });
+        const lineText = merged.map(r => r.text).join('');
+
+        // Calculate justification: extra space per word gap for wrapped (non-last) lines
+        let extraWordSpacing = 0;
+        const shouldJustify = isWrapped && !isHeading;
+        if (shouldJustify) {
+          const words = lineText.split(/\s+/).filter(w => w.length > 0);
+          const gaps = words.length - 1;
+          if (gaps > 0) {
+            const textOnlyWidth = words.reduce((sum, w) => sum + this.ctx.measureText(w).width, 0);
+            extraWordSpacing = (maxWidth - textOnlyWidth) / gaps;
+          }
+        }
+
+        this.blocks.push({
+          kind: 'text', runs: merged, y, baseFontSize: paraFontSize, isHeading,
+          justified: shouldJustify, extraWordSpacing,
+          charOffset: cumulativeCharOffset,
+        });
+
+        cumulativeCharOffset += lineText.length;
 
         let xOffset = pad;
         for (const run of merged) {
@@ -392,25 +525,27 @@ export class CanvasRenderer {
         const wordW = this.ctx.measureText(token.word).width;
 
         if (lineWidth + wordW > maxWidth && lineWidth > 0) {
-          // Wrap: remove trailing whitespace from current line
           while (lineRuns.length > 0 && /^\s+$/.test(lineRuns[lineRuns.length - 1].text)) {
             lineRuns.pop();
           }
-          flushLine();
+          flushLine(true); // wrapped line — justify
         }
 
         lineRuns.push({ text: token.word, href: token.href });
         lineWidth += wordW;
       }
 
-      // Flush remaining
+      // Flush remaining (last line — don't justify)
       while (lineRuns.length > 0 && /^\s+$/.test(lineRuns[lineRuns.length - 1].text)) {
         lineRuns.pop();
       }
-      flushLine();
+      flushLine(false);
 
-      // Extra space after headings, normal gap after body paragraphs
-      y += paraFontSize * this.lineHeight * (isHeading ? 0.5 : 0.3);
+      // Advance strippedCursor past this paragraph
+      strippedCursor = cumulativeCharOffset;
+
+      // Extra space after headings (0.8x), normal gap after body paragraphs
+      y += paraFontSize * this.lineHeight * (isHeading ? 0.8 : 0.3);
     }
 
     this.totalHeight = y + pad;
@@ -513,6 +648,7 @@ export class CanvasRenderer {
       this.targetPinchScale = Math.max(0.5, Math.min(3, this.targetPinchScale + delta));
     } else {
       this.targetScrollY += e.deltaY;
+      this.smoothScrolling = false;
       this.clampScroll();
     }
   }
@@ -537,6 +673,7 @@ export class CanvasRenderer {
       const delta = this.lastTouchY - y;
       this.touchVelocity = delta;
       this.targetScrollY += delta;
+      this.smoothScrolling = false;
       this.clampScroll();
       this.lastTouchY = y;
     } else if (e.touches.length === 2) {
@@ -589,13 +726,17 @@ export class CanvasRenderer {
       if (y < drawY - lineH || y > drawY + lineH * 0.3) continue;
 
       // Found the line — now find character position
-      this.ctx.font = `${block.isHeading ? '600 ' : ''}${block.baseFontSize * baseScale}px ${this.fontFamily}`;
+      const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
+      this.ctx.font = `${paraWeight} ${block.baseFontSize * baseScale}px ${this.fontFamily}`;
       const lineText = block.runs.map(r => r.text).join('');
       const startX = pad * baseScale;
 
+      const spacing = (block.extraWordSpacing ?? 0) * baseScale;
       for (let ci = 0; ci <= lineText.length; ci++) {
-        const textW = this.ctx.measureText(lineText.slice(0, ci)).width;
-        const nextW = ci < lineText.length ? this.ctx.measureText(lineText.slice(0, ci + 1)).width : textW;
+        const textW = this.measureTextWithSpacing(lineText, 0, ci, spacing, startX) - startX;
+        const nextW = ci < lineText.length
+          ? this.measureTextWithSpacing(lineText, 0, ci + 1, spacing, startX) - startX
+          : textW;
         const midX = startX + (textW + nextW) / 2;
         if (x <= midX || ci === lineText.length) {
           return { block: bi, charIndex: ci };
@@ -638,13 +779,34 @@ export class CanvasRenderer {
   /** Get the cumulative character offset of the cursor position */
   getCursorCharOffset(): number {
     if (!this.cursorPosition) return 0;
-    let offset = 0;
-    for (let bi = 0; bi < this.cursorPosition.block; bi++) {
-      const text = this.getBlockText(bi);
-      if (text) offset += text.length + 1; // +1 for line break
+    const block = this.blocks[this.cursorPosition.block];
+    if (!block || block.kind !== 'text') return 0;
+    return (block.charOffset ?? 0) + this.cursorPosition.charIndex;
+  }
+
+  /** Find word boundaries at a given char index within a block */
+  private getWordBounds(blockIndex: number, charIndex: number): { start: number; end: number } {
+    const text = this.getBlockText(blockIndex);
+    if (!text) return { start: charIndex, end: charIndex };
+    let start = Math.min(charIndex, text.length - 1);
+    let end = start;
+    if (start < 0) start = 0;
+    // Expand backward to word boundary
+    while (start > 0 && /\S/.test(text[start - 1])) start--;
+    // Expand forward to word boundary
+    while (end < text.length && /\S/.test(text[end])) end++;
+    return { start, end };
+  }
+
+  /** Measure x position at charIndex accounting for justified extra word spacing */
+  private measureTextWithSpacing(text: string, from: number, to: number, extraWordSpacing: number, startX: number): number {
+    if (extraWordSpacing <= 0) {
+      return startX + this.ctx.measureText(text.slice(from, to)).width;
     }
-    offset += this.cursorPosition.charIndex;
-    return offset;
+    // Count word gaps in the measured range
+    const slice = text.slice(from, to);
+    const spaceCount = (slice.match(/\s+/g) || []).length;
+    return startX + this.ctx.measureText(slice).width + spaceCount * extraWordSpacing;
   }
 
   private onMouseDown(e: MouseEvent) {
@@ -655,9 +817,12 @@ export class CanvasRenderer {
     if (!hit) return;
 
     this.isSelecting = true;
-    this.selectionStart = hit;
-    this.selectionEnd = hit;
-    this.cursorPosition = hit;
+
+    // Snap to whole word
+    const bounds = this.getWordBounds(hit.block, hit.charIndex);
+    this.selectionStart = { block: hit.block, charIndex: bounds.start };
+    this.selectionEnd = { block: hit.block, charIndex: bounds.end };
+    this.cursorPosition = { block: hit.block, charIndex: bounds.start };
     this.cursorVisible = true;
     this.onCursorChange?.(this.getCursorCharOffset());
   }
@@ -672,27 +837,8 @@ export class CanvasRenderer {
     }
   }
 
-  private onDblClick(e: MouseEvent) {
-    const hit = this.hitTestText(e.clientX, e.clientY);
-    if (!hit) return;
-
-    // Select the word at the cursor
-    const text = this.getBlockText(hit.block);
-    if (!text) return;
-
-    let wordStart = hit.charIndex;
-    let wordEnd = hit.charIndex;
-
-    // Expand backward to word boundary
-    while (wordStart > 0 && /\w/.test(text[wordStart - 1])) wordStart--;
-    // Expand forward to word boundary
-    while (wordEnd < text.length && /\w/.test(text[wordEnd])) wordEnd++;
-
-    if (wordStart < wordEnd) {
-      this.selectionStart = { block: hit.block, charIndex: wordStart };
-      this.selectionEnd = { block: hit.block, charIndex: wordEnd };
-      this.onTextSelected?.(text.slice(wordStart, wordEnd));
-    }
+  private onDblClick(_e: MouseEvent) {
+    // Word selection is now handled by single click; double-click is a no-op
   }
 
   private onKeyDown(e: KeyboardEvent) {
@@ -737,12 +883,14 @@ export class CanvasRenderer {
 
   /** Update cursor style and handle drag selection */
   private onMouseMove(e: MouseEvent) {
-    // Handle drag selection
+    // Handle drag selection — extend by whole words
     if (this.isSelecting) {
       const hit = this.hitTestText(e.clientX, e.clientY);
       if (hit) {
-        this.selectionEnd = hit;
-        this.cursorPosition = hit;
+        const bounds = this.getWordBounds(hit.block, hit.charIndex);
+        // Extend selection end to word boundary
+        this.selectionEnd = { block: hit.block, charIndex: bounds.end };
+        this.cursorPosition = { block: hit.block, charIndex: bounds.end };
       }
       this.canvas.style.cursor = 'text';
       return;
@@ -793,10 +941,20 @@ export class CanvasRenderer {
   // ── Render loop ──
 
   private loop() {
-    // Direct scroll — no spring, no bounce
-    this.scrollY = this.targetScrollY;
+    // Scroll: smooth lerp for TTS auto-scroll, instant for user input
+    if (this.smoothScrolling) {
+      const scrollDiff = this.targetScrollY - this.scrollY;
+      if (Math.abs(scrollDiff) < 0.5) {
+        this.scrollY = this.targetScrollY;
+        this.smoothScrolling = false;
+      } else {
+        this.scrollY += scrollDiff * 0.08;
+      }
+    } else {
+      this.scrollY = this.targetScrollY;
+    }
 
-    // Direct zoom — no spring, no bounce
+    // Direct zoom
     this.pinchScale = this.targetPinchScale;
 
     // Re-layout text when zoom changes
@@ -863,10 +1021,11 @@ export class CanvasRenderer {
         this.ctx.save();
         this.ctx.globalAlpha = morphAlpha;
 
+        const extraSpacing = (block.extraWordSpacing || 0) * baseScale * morphScale;
         if (this.bionic) {
-          this.drawBionicRuns(block.runs, pad * baseScale, drawY, finalFontSize, block.isHeading);
+          this.drawBionicRuns(block.runs, pad * baseScale, drawY, finalFontSize, block.isHeading, extraSpacing);
         } else {
-          this.drawRuns(block.runs, pad * baseScale, drawY, finalFontSize, block.isHeading);
+          this.drawRuns(block.runs, pad * baseScale, drawY, finalFontSize, block.isHeading, extraSpacing);
         }
 
         this.ctx.restore();
@@ -924,7 +1083,8 @@ export class CanvasRenderer {
         if (drawY < -100 || drawY > viewH + 100) continue;
 
         const fontSize = block.baseFontSize * baseScale;
-        this.ctx.font = `${block.isHeading ? '600 ' : ''}${fontSize}px ${this.fontFamily}`;
+        const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
+        this.ctx.font = `${paraWeight} ${fontSize}px ${this.fontFamily}`;
         const lineText = block.runs.map(r => r.text).join('');
         const startX = pad * baseScale;
 
@@ -933,8 +1093,9 @@ export class CanvasRenderer {
 
         if (s === e) continue;
 
-        const x1 = startX + this.ctx.measureText(lineText.slice(0, s)).width;
-        const x2 = startX + this.ctx.measureText(lineText.slice(0, e)).width;
+        const spacing = (block.extraWordSpacing ?? 0) * baseScale;
+        const x1 = this.measureTextWithSpacing(lineText, 0, s, spacing, startX);
+        const x2 = this.measureTextWithSpacing(lineText, 0, e, spacing, startX);
         const lineH = fontSize * this.lineHeight;
 
         this.ctx.fillRect(x1, drawY - fontSize, x2 - x1, lineH);
@@ -943,41 +1104,165 @@ export class CanvasRenderer {
       this.ctx.restore();
     }
 
-    // Draw blinking cursor
+    // Draw word highlight cursor (subtle background on selected word)
     if (this.cursorPosition && this.cursorVisible && !this.getSelectedText()) {
       const block = this.blocks[this.cursorPosition.block];
       if (block && block.kind === 'text') {
         const drawY = block.y * baseScale - this.scrollY;
         if (drawY > -100 && drawY < viewH + 100) {
           const fontSize = block.baseFontSize * baseScale;
-          this.ctx.font = `${block.isHeading ? '600 ' : ''}${fontSize}px ${this.fontFamily}`;
+          const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
+          this.ctx.font = `${paraWeight} ${fontSize}px ${this.fontFamily}`;
           const lineText = block.runs.map(r => r.text).join('');
           const startX = pad * baseScale;
-          const cursorX = startX + this.ctx.measureText(lineText.slice(0, this.cursorPosition.charIndex)).width;
 
-          this.ctx.save();
-          this.ctx.strokeStyle = '#e8e8e8';
-          this.ctx.lineWidth = 1.5;
-          this.ctx.beginPath();
-          this.ctx.moveTo(cursorX, drawY - fontSize);
-          this.ctx.lineTo(cursorX, drawY + fontSize * 0.2);
-          this.ctx.stroke();
-          this.ctx.restore();
+          // Find word bounds at cursor
+          const text = lineText;
+          let wStart = this.cursorPosition.charIndex;
+          let wEnd = wStart;
+          while (wStart > 0 && /\S/.test(text[wStart - 1])) wStart--;
+          while (wEnd < text.length && /\S/.test(text[wEnd])) wEnd++;
+
+          if (wStart < wEnd) {
+            const spacing = (block.extraWordSpacing ?? 0) * baseScale;
+            const x1 = this.measureTextWithSpacing(text, 0, wStart, spacing, startX);
+            const x2 = this.measureTextWithSpacing(text, 0, wEnd, spacing, startX);
+            const lineH = fontSize * this.lineHeight;
+
+            this.ctx.save();
+            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+            this.ctx.fillRect(x1, drawY - fontSize, x2 - x1, lineH);
+            this.ctx.restore();
+          }
         }
       }
     }
+
+    // Draw TTS word highlight (always call to allow fade-out animation)
+    if (this.highlightedWordOffset !== null || this.highlightRect.opacity > 0.005) {
+      this.renderHighlightedWord(pad, viewH, baseScale);
+    }
   }
 
-  /** Draw runs with link styling */
-  private drawRuns(runs: TextRun[], x: number, y: number, fontSize: number, isHeading?: boolean) {
+  /** Render highlighted word during TTS playback */
+  private renderHighlightedWord(pad: number, viewH: number, baseScale: number) {
+    if (this.highlightedWordOffset === null) {
+      // Fade out
+      this.highlightRect.opacity *= 0.85;
+      if (this.highlightRect.opacity < 0.005) return;
+    } else {
+      // Find target rect for the current word using block charOffset
+      let found = false;
+      for (let bi = 0; bi < this.blocks.length; bi++) {
+        const block = this.blocks[bi];
+        if (block.kind !== 'text') continue;
+        const blockStart = block.charOffset ?? 0;
+        const lineText = block.runs.map(r => r.text).join('');
+        const blockEnd = blockStart + lineText.length;
+        if (this.highlightedWordOffset < blockStart || this.highlightedWordOffset >= blockEnd) continue;
+
+        const localOffset = this.highlightedWordOffset - blockStart;
+        const drawY = block.y * baseScale - this.scrollY;
+        if (drawY < -100 || drawY > viewH + 100) break;
+
+        const fontSize = block.baseFontSize * baseScale;
+        const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
+        this.ctx.font = `${paraWeight} ${fontSize}px ${this.fontFamily}`;
+        const startX = pad * baseScale;
+
+        let wStart = Math.min(localOffset, lineText.length - 1);
+        let wEnd = wStart;
+        if (wStart < 0) break;
+        while (wStart > 0 && /\S/.test(lineText[wStart - 1])) wStart--;
+        while (wEnd < lineText.length && /\S/.test(lineText[wEnd])) wEnd++;
+
+        if (wStart < wEnd) {
+          // Account for justified text extra word spacing (scaled for zoom)
+          const scaledSpacing = (block.extraWordSpacing ?? 0) * baseScale;
+          const x1 = this.measureTextWithSpacing(lineText, 0, wStart, scaledSpacing, startX);
+          const x2 = this.measureTextWithSpacing(lineText, 0, wEnd, scaledSpacing, startX);
+          const lineH = fontSize * this.lineHeight;
+          const wordW = x2 - x1;
+          const hPad = fontSize * 0.15; // horizontal padding for center-aligned bg
+          this.highlightTarget.x = x1 - hPad;
+          this.highlightTarget.y = drawY - fontSize;
+          this.highlightTarget.w = wordW + hPad * 2;
+          this.highlightTarget.h = lineH;
+          found = true;
+        }
+        break;
+      }
+      if (!found) return;
+
+      // Lerp toward target
+      const speed = 0.18;
+      const r = this.highlightRect;
+      const t = this.highlightTarget;
+      if (r.opacity < 0.01) {
+        // First appearance — snap to position
+        r.x = t.x; r.y = t.y; r.w = t.w; r.h = t.h;
+      } else {
+        r.x += (t.x - r.x) * speed;
+        r.y += (t.y - r.y) * speed;
+        r.w += (t.w - r.w) * speed;
+        r.h += (t.h - r.h) * speed;
+      }
+      r.opacity += (1 - r.opacity) * 0.25;
+    }
+
+    // Draw rounded rect highlight
+    const r = this.highlightRect;
+    if (r.opacity < 0.005 || r.w < 1) return;
+    const radius = r.h * 0.1; // 10% border radius
+    this.ctx.save();
+    this.ctx.globalAlpha = r.opacity;
+    this.ctx.fillStyle = 'rgba(255, 200, 50, 0.12)';
+    this.ctx.beginPath();
+    this.ctx.roundRect(r.x, r.y, r.w, r.h, radius);
+    this.ctx.fill();
+    this.ctx.restore();
+  }
+
+  /** Draw runs with link styling and justification */
+  private drawRuns(runs: TextRun[], x: number, y: number, fontSize: number, isHeading?: boolean, extraWordSpacing: number = 0) {
     let cursorX = x;
-    const weight = isHeading ? '600 ' : '';
+    const weight = isHeading ? '600' : this.fontWeight.toString();
+
+    // For justified text, draw word by word with extra spacing
+    if (extraWordSpacing > 0) {
+      this.ctx.font = `${weight} ${fontSize}px ${this.fontFamily}`;
+      const fullText = runs.map(r => r.text).join('');
+      const words = fullText.split(/(\s+)/);
+      // Build a map of which character ranges are links
+      let charPos = 0;
+      const linkRanges: { start: number; end: number; href: string }[] = [];
+      for (const run of runs) {
+        if (run.href) linkRanges.push({ start: charPos, end: charPos + run.text.length, href: run.href });
+        charPos += run.text.length;
+      }
+
+      let pos = 0;
+      for (const token of words) {
+        const isLink = linkRanges.some(r => pos >= r.start && pos < r.end);
+        this.ctx.fillStyle = isLink ? '#6db3f2' : (isHeading ? '#ffffff' : '#e8e8e8');
+
+        if (/^\s+$/.test(token)) {
+          cursorX += extraWordSpacing;
+          pos += token.length;
+          continue;
+        }
+
+        this.ctx.fillText(token, cursorX, y);
+        cursorX += this.ctx.measureText(token).width;
+        pos += token.length;
+      }
+      return;
+    }
 
     for (const run of runs) {
-      this.ctx.font = `${weight}${fontSize}px ${this.fontFamily}`;
+      this.ctx.font = `${weight} ${fontSize}px ${this.fontFamily}`;
 
       if (run.href) {
-        // Link styling: blue color + underline
         this.ctx.fillStyle = '#6db3f2';
         this.ctx.fillText(run.text, cursorX, y);
 
@@ -996,7 +1281,7 @@ export class CanvasRenderer {
 
         cursorX += textWidth;
       } else {
-        this.ctx.fillStyle = '#e8e8e8';
+        this.ctx.fillStyle = isHeading ? '#ffffff' : '#e8e8e8';
         this.ctx.fillText(run.text, cursorX, y);
         cursorX += this.ctx.measureText(run.text).width;
       }
@@ -1004,7 +1289,7 @@ export class CanvasRenderer {
   }
 
   /** Draw bionic-styled runs (with link support) */
-  private drawBionicRuns(runs: TextRun[], x: number, y: number, fontSize: number, _isHeading?: boolean) {
+  private drawBionicRuns(runs: TextRun[], x: number, y: number, fontSize: number, _isHeading?: boolean, extraWordSpacing: number = 0) {
     let cursorX = x;
 
     for (const run of runs) {
@@ -1012,8 +1297,7 @@ export class CanvasRenderer {
 
       for (const token of words) {
         if (/^\s+$/.test(token)) {
-          this.ctx.font = `${fontSize}px ${this.fontFamily}`;
-          cursorX += this.ctx.measureText(token).width;
+          cursorX += extraWordSpacing || this.ctx.measureText(token).width;
           continue;
         }
 

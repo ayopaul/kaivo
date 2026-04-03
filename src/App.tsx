@@ -9,6 +9,8 @@ import {
   initGoogleAuth,
   signIn as driveSignIn,
   signOut as driveSignOut,
+  getUserProfile,
+  GoogleUserProfile,
 } from './google-drive';
 import { loadLocalLibrary } from './library-storage';
 
@@ -20,6 +22,7 @@ const App: React.FC = () => {
   const [fileKey, setFileKey] = useState('');
   const [driveReady, setDriveReady] = useState(false);
   const [driveSignedIn, setDriveSignedIn] = useState(false);
+  const [userProfile, setUserProfile] = useState<GoogleUserProfile | null>(null);
   const [hasLibrary, setHasLibrary] = useState(false);
 
   useEffect(() => {
@@ -29,7 +32,9 @@ const App: React.FC = () => {
     if (isDriveConfigured()) {
       initGoogleAuth().then(() => {
         setDriveReady(true);
-        setDriveSignedIn(isDriveSignedIn());
+        const signedIn = isDriveSignedIn();
+        setDriveSignedIn(signedIn);
+        if (signedIn) setUserProfile(getUserProfile());
       });
     }
   }, []);
@@ -52,6 +57,7 @@ const App: React.FC = () => {
     try {
       await driveSignIn();
       setDriveSignedIn(true);
+      setUserProfile(getUserProfile());
     } catch (err) {
       console.error('Google sign-in failed:', err);
     }
@@ -60,6 +66,7 @@ const App: React.FC = () => {
   const handleDriveSignOut = useCallback(() => {
     driveSignOut();
     setDriveSignedIn(false);
+    setUserProfile(null);
   }, []);
 
   const handleShowLibrary = useCallback(() => setView('library'), []);
@@ -72,6 +79,7 @@ const App: React.FC = () => {
           onFileLoaded={handleFileLoaded}
           driveReady={driveReady}
           driveSignedIn={driveSignedIn}
+          userProfile={userProfile}
           onDriveSignIn={handleDriveSignIn}
           onDriveSignOut={handleDriveSignOut}
           onShowLibrary={handleShowLibrary}
@@ -91,6 +99,7 @@ const App: React.FC = () => {
           fileKey={fileKey}
           onBack={handleBack}
           cloudEnabled={driveSignedIn}
+          userProfile={userProfile}
         />
       )}
     </div>

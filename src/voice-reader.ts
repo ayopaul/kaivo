@@ -6,7 +6,7 @@
  * - "google": Google Cloud TTS (free 1M chars/mo, high quality WaveNet/Neural2 voices)
  */
 
-import { isConfigured as isGoogleTTSConfigured, speakChunk as googleSpeakChunk, getSavedVoiceName, getSavedLanguageCode } from './google-tts';
+import { isConfigured as isGoogleTTSConfigured, speakChunk as googleSpeakChunk, prefetch as googlePrefetch, stopPlayback as googleStopPlayback, getSavedVoiceName, getSavedLanguageCode } from './google-tts';
 
 export type TTSEngine = 'system' | 'google';
 
@@ -32,12 +32,23 @@ export class VoiceReader {
 
   constructor() {
     this.synth = window.speechSynthesis;
-    this.googleVoiceName = getSavedVoiceName() || '';
+    // Only restore saved voice if it's a full API name (contains a dash), not a bare name
+    const saved = getSavedVoiceName() || '';
+    this.googleVoiceName = saved.includes('-') ? saved : '';
     this.googleLangCode = getSavedLanguageCode() || 'en-US';
   }
 
+  private bookTitle: string = '';
+
+  setBookTitle(title: string): void {
+    this.bookTitle = title;
+  }
+
   setText(text: string): void {
-    this.text = text.replace(/[\x01\x02\x03\x04]/g, '');
+    // Strip markers the same way the canvas renderer does: keep link text, drop URLs and control chars
+    this.text = text
+      .replace(/\x01[^\x02]*\x02([^\x03]*)\x03/g, '$1')
+      .replace(/[\x01-\x05]/g, '');
     this.chunks = this.text
       .split(/\n\n+/)
       .map(c => c.trim())
@@ -93,6 +104,16 @@ export class VoiceReader {
     this.aborted = false;
     this.onStateChange?.();
 
+    // Media Session API for background audio control
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: this.bookTitle || 'Reading',
+        artist: 'Ebook Reader',
+      });
+      navigator.mediaSession.setActionHandler('play', () => this.play());
+      navigator.mediaSession.setActionHandler('pause', () => this.pause());
+    }
+
     if (this.engine === 'google' && isGoogleTTSConfigured()) {
       this.speakGoogle();
     } else {
@@ -113,6 +134,7 @@ export class VoiceReader {
   stop(): void {
     this.aborted = true;
     this.synth.cancel();
+    googleStopPlayback();
     this.playing = false;
     this.paused = false;
     this.currentChunkIndex = 0;
@@ -199,7 +221,6 @@ export class VoiceReader {
 
     while (this.currentChunkIndex < this.chunks.length && !this.aborted) {
       if (this.paused) {
-        // Wait until unpaused
         await new Promise<void>(resolve => {
           const check = () => {
             if (!this.paused || this.aborted) { resolve(); return; }
@@ -211,10 +232,20 @@ export class VoiceReader {
       }
 
       const chunkText = this.chunks[this.currentChunkIndex];
-      this.onProgress?.(this.currentPosition);
+      const chunkStart = this.currentPosition;
+      this.onProgress?.(chunkStart);
+
+      // Pre-fetch the next chunk while this one plays
+      const nextChunk = this.currentChunkIndex + 1 < this.chunks.length
+        ? this.chunks[this.currentChunkIndex + 1] : null;
+      if (nextChunk) {
+        googlePrefetch(nextChunk, voiceName, langCode, this.rate);
+      }
 
       try {
-        await googleSpeakChunk(chunkText, voiceName, langCode, this.rate);
+        await googleSpeakChunk(chunkText, voiceName, langCode, this.rate, (charOffset) => {
+          this.onProgress?.(chunkStart + charOffset);
+        });
       } catch (err) {
         console.warn('[voice-reader] Google TTS error, falling back to system:', err);
         this.engine = 'system';
@@ -234,6 +265,24 @@ export class VoiceReader {
       this.paused = false;
       this.onEnd?.();
       this.onStateChange?.();
+    }
+  }
+
+  /** Speak a short preview sentence using current engine/voice settings */
+  preview(): void {
+    const previewText = 'The quick brown fox jumps over the lazy dog';
+    if (this.engine === 'google' && isGoogleTTSConfigured()) {
+      const voiceName = this.googleVoiceName || getSavedVoiceName() || '';
+      const langCode = this.googleLangCode || getSavedLanguageCode() || 'en-US';
+      if (voiceName) {
+        googleSpeakChunk(previewText, voiceName, langCode, this.rate).catch(() => {});
+      }
+    } else {
+      this.synth.cancel();
+      const utt = new SpeechSynthesisUtterance(previewText);
+      if (this.selectedVoice) utt.voice = this.selectedVoice;
+      utt.rate = this.rate;
+      this.synth.speak(utt);
     }
   }
 

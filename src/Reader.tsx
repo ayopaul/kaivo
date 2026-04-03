@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { CanvasRenderer, RenderMode } from './canvas-renderer';
 import { BookData, TocEntry } from './pdf-extractor';
-import { isSignedIn, syncBookProgress, loadBookProgress } from './google-drive';
+import { isSignedIn, syncBookProgress, loadBookProgress, GoogleUserProfile } from './google-drive';
 import { saveLibraryEntry } from './library-storage';
 import { VoiceReader, TTSEngine } from './voice-reader';
 import * as GoogleTTS from './google-tts';
@@ -10,6 +10,7 @@ interface BookmarkEntry {
   position: number;
   label: string;
   timestamp: number;
+  contextText?: string;
 }
 
 // ── Storage helpers ──
@@ -39,6 +40,28 @@ function formatTime(ts: number): string {
   return `${month} ${day}, ${hour}:${min}`;
 }
 
+// Font settings persistence
+function loadFontFamily(): string {
+  try { return localStorage.getItem('ebook:settings:fontFamily') || "'Inter', system-ui, sans-serif"; } catch { return "'Inter', system-ui, sans-serif"; }
+}
+function saveFontFamily(family: string) {
+  try { localStorage.setItem('ebook:settings:fontFamily', family); } catch { /* */ }
+}
+function loadFontWeight(): number {
+  try { return parseInt(localStorage.getItem('ebook:settings:fontWeight') || '400', 10); } catch { return 400; }
+}
+function saveFontWeight(weight: number) {
+  try { localStorage.setItem('ebook:settings:fontWeight', String(weight)); } catch { /* */ }
+}
+
+const FONT_OPTIONS = [
+  { label: 'Inter', value: "'Inter', system-ui, sans-serif" },
+  { label: 'Lora', value: "'Lora', Georgia, serif" },
+  { label: 'Merriweather', value: "'Merriweather', Georgia, serif" },
+  { label: 'Georgia', value: "Georgia, 'Times New Roman', serif" },
+  { label: 'OpenDyslexic', value: "'OpenDyslexic', sans-serif" },
+];
+
 // ── Reader Component ──
 
 interface ReaderProps {
@@ -46,9 +69,10 @@ interface ReaderProps {
   fileKey: string;
   onBack: () => void;
   cloudEnabled: boolean;
+  userProfile?: GoogleUserProfile | null;
 }
 
-const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled }) => {
+const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled, userProfile }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<CanvasRenderer | null>(null);
 
@@ -59,15 +83,22 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
   const [bookmarks, setBookmarks] = useState<BookmarkEntry[]>(() => loadBookmarks(fileKey));
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [tocOpen, setTocOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Bottom bar auto-hide
+  const [bottomBarVisible, setBottomBarVisible] = useState(true);
+
+  // Font settings
+  const [fontFamily, setFontFamily] = useState(loadFontFamily);
+  const [fontWeight, setFontWeight] = useState(loadFontWeight);
 
   // Voice reader state
   const voiceReaderRef = useRef<VoiceReader | null>(null);
   const [voicePlaying, setVoicePlaying] = useState(false);
-  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoiceName, setSelectedVoiceName] = useState('');
   const [voiceRate, setVoiceRate] = useState(1.0);
-  const [ttsEngine, setTtsEngine] = useState<TTSEngine>('system');
+  const [ttsEngine, setTtsEngine] = useState<TTSEngine>(GoogleTTS.isConfigured() ? 'google' : 'system');
   const [googleApiKey, setGoogleApiKey] = useState(GoogleTTS.getApiKey() || '');
   const [googleVoices, setGoogleVoices] = useState<GoogleTTS.GoogleVoice[]>([]);
   const [selectedGoogleVoice, setSelectedGoogleVoice] = useState(GoogleTTS.getSavedVoiceName() || '');
@@ -76,6 +107,8 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
   const bookmarkPanelRef = useRef<HTMLDivElement>(null);
   const tocPanelRef = useRef<HTMLDivElement>(null);
   const tocBtnRef = useRef<HTMLButtonElement>(null);
+  const settingsBtnRef = useRef<HTMLButtonElement>(null);
+  const settingsPanelRef = useRef<HTMLDivElement>(null);
   const lastSaveTimeRef = useRef(0);
   const lastCloudSyncRef = useRef(0);
 
@@ -83,6 +116,8 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
   useEffect(() => {
     const vr = new VoiceReader();
     voiceReaderRef.current = vr;
+    vr.setBookTitle(bookData.title);
+    if (GoogleTTS.isConfigured()) vr.setEngine('google');
 
     vr.onStateChange = () => {
       setVoicePlaying(vr.isPlaying());
@@ -90,7 +125,11 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
     vr.onEnd = () => {
       setVoicePlaying(false);
-      setVoicePanelOpen(false);
+    };
+
+    // Wire word highlighting
+    vr.onProgress = (charOffset) => {
+      rendererRef.current?.setHighlightedWord(charOffset);
     };
 
     // Load voices (may be async on some browsers)
@@ -99,7 +138,6 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
       if (available.length > 0) {
         setVoices(available);
         if (!vr['selectedVoice'] && available.length > 0) {
-          // Pick default English voice if available
           const defaultVoice = available.find(v => v.default) || available.find(v => v.lang.startsWith('en')) || available[0];
           vr.setVoice(defaultVoice);
           setSelectedVoiceName(defaultVoice.name);
@@ -115,16 +153,18 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     if (GoogleTTS.isConfigured()) {
       GoogleTTS.getVoices('en').then(v => {
         setGoogleVoices(v);
-        if (v.length > 0 && !GoogleTTS.getSavedVoiceName()) {
-          const best = v[0];
-          setSelectedGoogleVoice(best.name);
-          GoogleTTS.saveVoiceName(best.name);
-          GoogleTTS.saveLanguageCode(best.languageCodes[0]);
-          vr.setGoogleVoice(best.name, best.languageCodes[0]);
-        } else if (GoogleTTS.getSavedVoiceName()) {
-          const saved = GoogleTTS.getSavedVoiceName()!;
-          const voice = v.find(x => x.name === saved);
-          if (voice) vr.setGoogleVoice(saved, voice.languageCodes[0]);
+        if (v.length > 0) {
+          const saved = GoogleTTS.getSavedVoiceName();
+          // Try exact match, then fuzzy match (bare name → full API name), then default to Algieba
+          let voice = saved ? v.find(x => x.name === saved) : null;
+          if (!voice && saved) voice = v.find(x => x.name.toLowerCase().includes(saved.toLowerCase()));
+          if (!voice) voice = v.find(x => /Algieba/i.test(x.name));
+          if (!voice) voice = v[0];
+
+          setSelectedGoogleVoice(voice.name);
+          GoogleTTS.saveVoiceName(voice.name);
+          GoogleTTS.saveLanguageCode(voice.languageCodes[0]);
+          vr.setGoogleVoice(voice.name, voice.languageCodes[0]);
         }
       }).catch(() => {});
     }
@@ -150,10 +190,17 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
     renderer.setMode(currentMode);
     renderer.setBionic(bionicEnabled);
+    renderer.setFontFamily(fontFamily);
+    renderer.setFontWeight(fontWeight);
 
-    // When user places cursor, update voice reader start position
+    // When user taps a word, seek voice reader to that position
     renderer.onCursorChange = (charOffset) => {
-      voiceReaderRef.current?.seekToOffset(charOffset);
+      const vr = voiceReaderRef.current;
+      if (!vr) return;
+      // Only seek if not currently playing — don't interrupt active playback
+      if (!vr.isPlaying() && !vr.isPaused()) {
+        vr.seekToOffset(charOffset);
+      }
     };
 
     requestAnimationFrame(async () => {
@@ -196,8 +243,12 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
       }
     });
 
-    renderer.onProgress = (prog, _direction) => {
+    renderer.onProgress = (prog, direction) => {
       setProgress(prog);
+
+      // Bottom bar auto-hide
+      setBottomBarVisible(direction === 'up' || prog < 0.01 || prog > 0.99);
+
       const now = Date.now();
       if (now - lastSaveTimeRef.current > 500 && prog < 0.999) {
         saveProgress(fileKey, prog);
@@ -226,6 +277,16 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     rendererRef.current?.setBookmarks(bookmarks.map(b => b.position));
   }, [bookmarks]);
 
+  useEffect(() => {
+    rendererRef.current?.setFontFamily(fontFamily);
+    saveFontFamily(fontFamily);
+  }, [fontFamily]);
+
+  useEffect(() => {
+    rendererRef.current?.setFontWeight(fontWeight);
+    saveFontWeight(fontWeight);
+  }, [fontWeight]);
+
   // Close panels when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -239,10 +300,15 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
         !tocPanelRef.current.contains(e.target as Node)) {
         setTocOpen(false);
       }
+      if (settingsOpen && settingsBtnRef.current && settingsPanelRef.current &&
+        !settingsBtnRef.current.contains(e.target as Node) &&
+        !settingsPanelRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
+      }
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
-  }, [bookmarkPanelOpen, tocOpen]);
+  }, [bookmarkPanelOpen, tocOpen, settingsOpen]);
 
   // Scroll hint
   const hintRef = useRef<HTMLDivElement>(null);
@@ -291,6 +357,18 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     setTimeout(() => btn.classList.remove('flash-add', 'flash-remove'), 400);
   }, []);
 
+  /** Extract ~40 chars of context text near the given progress position */
+  const getContextText = useCallback((position: number): string => {
+    const text = bookData.allText.replace(/[\x01-\x05]/g, '');
+    const charIdx = Math.floor(position * text.length);
+    const start = Math.max(0, charIdx - 20);
+    const end = Math.min(text.length, charIdx + 20);
+    let ctx = text.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (start > 0) ctx = '...' + ctx;
+    if (end < text.length) ctx = ctx + '...';
+    return ctx;
+  }, [bookData.allText]);
+
   const handleBookmarkClick = useCallback((e: React.MouseEvent) => {
     if (e.shiftKey || bookmarkPanelOpen) {
       setBookmarkPanelOpen(prev => !prev);
@@ -308,17 +386,35 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
         flashBookmarkBtn(false);
         return;
       }
-      const entry: BookmarkEntry = { position, label: `${pct}%`, timestamp: Date.now() };
+      const contextText = getContextText(position);
+      const entry: BookmarkEntry = { position, label: `${pct}%`, timestamp: Date.now(), contextText };
       const updated = [...current, entry].sort((a, b) => a.position - b.position);
       saveBookmarks(fileKey, updated);
       setBookmarks(updated);
       flashBookmarkBtn(true);
       if (cloudEnabled && isSignedIn()) syncBookProgress(fileKey, bookData.title, position, updated, bookData.fileType);
     }
-  }, [bookmarkPanelOpen, fileKey, flashBookmarkBtn, cloudEnabled, bookData.title]);
+  }, [bookmarkPanelOpen, fileKey, flashBookmarkBtn, cloudEnabled, bookData.title, getContextText]);
+
+  const [readingPosition, setReadingPosition] = useState<number | null>(null);
 
   const handleBookmarkContextMenu = useCallback((e: React.MouseEvent) => { e.preventDefault(); setBookmarkPanelOpen(prev => !prev); }, []);
-  const handleBookmarkNavigate = useCallback((position: number) => { rendererRef.current?.setScrollProgress(position); setBookmarkPanelOpen(false); }, []);
+  const handleBookmarkNavigate = useCallback((position: number) => {
+    // Save current reading position before jumping
+    const currentPos = rendererRef.current?.getProgress() ?? null;
+    if (currentPos !== null && Math.abs(currentPos - position) > 0.01) {
+      setReadingPosition(currentPos);
+    }
+    rendererRef.current?.setScrollProgress(position);
+    setBookmarkPanelOpen(false);
+  }, []);
+  const handleReturnToReading = useCallback(() => {
+    if (readingPosition !== null) {
+      rendererRef.current?.setScrollProgress(readingPosition);
+      setReadingPosition(null);
+      setBookmarkPanelOpen(false);
+    }
+  }, [readingPosition]);
   const handleBookmarkDelete = useCallback((index: number) => {
     const current = loadBookmarks(fileKey);
     current.splice(index, 1);
@@ -342,21 +438,18 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
     if (vr.isPlaying()) {
       vr.pause();
+      // Keep the highlight visible while paused (don't clear it)
     } else if (vr.isPaused()) {
       vr.play();
     } else {
-      // Start fresh — seek to current reading position
-      const charOffset = Math.floor(progress * bookData.allText.length);
+      // Start fresh — seek to current cursor position if available, else reading progress
+      const renderer = rendererRef.current;
+      const cursorOffset = renderer?.getCursorCharOffset?.() ?? 0;
+      const charOffset = cursorOffset > 0 ? cursorOffset : Math.floor(progress * bookData.allText.length);
       vr.seekToOffset(charOffset);
       vr.play();
-      setVoicePanelOpen(true);
     }
   }, [progress, bookData.allText]);
-
-  const handleVoiceStop = useCallback(() => {
-    voiceReaderRef.current?.stop();
-    setVoicePanelOpen(false);
-  }, []);
 
   const handleVoiceSelect = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const vr = voiceReaderRef.current;
@@ -365,10 +458,10 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     if (voice) {
       vr.setVoice(voice);
       setSelectedVoiceName(voice.name);
-      // If currently playing, restart with new voice
       if (vr.isPlaying() || vr.isPaused()) {
         const wasPlaying = vr.isPlaying();
         vr.stop();
+        rendererRef.current?.setHighlightedWord(null);
         if (wasPlaying) {
           const charOffset = Math.floor(progress * bookData.allText.length);
           vr.seekToOffset(charOffset);
@@ -417,6 +510,10 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     }
   }, [googleVoices]);
 
+  const handleVoicePreview = useCallback(() => {
+    voiceReaderRef.current?.preview();
+  }, []);
+
   // ── Render ──
 
   const pct = Math.round(progress * 100);
@@ -430,20 +527,16 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
   return (
     <div className="reader">
-      {/* Simplified top header: back + title (left), bionic toggle (right) */}
+      {/* Simplified top header: back + title only */}
       <div className="reader-header">
         <div className="reader-header-row1">
           <div className="reader-header-left">
             <button className="reader-back" onClick={handleBack}>&larr;</button>
             <span className="reader-title">{bookData.title}</span>
           </div>
-          <div className="reader-header-actions">
-            <label className="bionic-toggle">
-              <span className="bionic-label">Bionic</span>
-              <input type="checkbox" checked={bionicEnabled} onChange={handleBionicChange} />
-              <span className="bionic-slider"></span>
-            </label>
-          </div>
+          {cloudEnabled && userProfile?.picture && (
+            <img className="reader-profile-pic" src={userProfile.picture} alt="" referrerPolicy="no-referrer" />
+          )}
         </div>
       </div>
 
@@ -453,51 +546,8 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
         <div className="scroll-hint" ref={hintRef}>Scroll to read &middot; Pinch to zoom</div>
       </div>
 
-      {/* Voice control panel */}
-      {voicePanelOpen && (
-        <div className="voice-panel">
-          {/* Engine toggle */}
-          <div className="voice-panel-row">
-            <div className="voice-engine-tabs">
-              <button className={`voice-engine-tab${ttsEngine === 'system' ? ' active' : ''}`} onClick={() => handleEngineChange('system')}>System</button>
-              <button className={`voice-engine-tab${ttsEngine === 'google' ? ' active' : ''}`} onClick={() => handleEngineChange('google')}>Google HD</button>
-            </div>
-            <button className="voice-stop-btn" onClick={handleVoiceStop} title="Stop">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                <rect x="3" y="3" width="10" height="10" rx="1" />
-              </svg>
-            </button>
-          </div>
-
-          {ttsEngine === 'system' ? (
-            <div className="voice-panel-row">
-              <select className="voice-select" value={selectedVoiceName} onChange={handleVoiceSelect}>
-                {voices.map(v => (
-                  <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
-                ))}
-              </select>
-            </div>
-          ) : (
-            <div className="voice-panel-row">
-              <select className="voice-select" value={selectedGoogleVoice} onChange={handleGoogleVoiceSelect}>
-                {googleVoices.map(v => (
-                  <option key={v.name} value={v.name}>
-                    {v.name.split('-').slice(2).join('-')} ({v.languageCodes[0]})
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <div className="voice-panel-row">
-            <span className="voice-rate-label">{voiceRate.toFixed(1)}x</span>
-            <input type="range" className="voice-rate-slider" min="0.5" max="2.0" step="0.1" value={voiceRate} onChange={handleVoiceRateChange} />
-          </div>
-        </div>
-      )}
-
       {/* Bottom bar */}
-      <div className="reader-bottom-bar">
+      <div className={`reader-bottom-bar${bottomBarVisible ? '' : ' hidden'}`}>
         {/* Progress bar at very top of bottom bar */}
         <div className="bottom-progress-bar">
           <div className="bottom-progress-fill" style={{ width: `${pct}%` }}></div>
@@ -563,21 +613,10 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
             )}
           </button>
 
-          {/* Center: Mode tabs */}
-          <div className="mode-tabs">
-            {modes.map(m => (
-              <button
-                key={m.key}
-                className={`mode-tab${currentMode === m.key ? ' active' : ''}`}
-                onClick={() => handleModeChange(m.key)}
-              >{m.label}</button>
-            ))}
-          </div>
-
           {/* Progress percentage */}
           <span className="bottom-bar-progress-label">{pct}%</span>
 
-          {/* Right: Bookmark button */}
+          {/* Bookmark button */}
           <div className="bookmark-group">
             <button className="bookmark-btn" ref={bookmarkBtnRef} title="Add bookmark"
               onClick={handleBookmarkClick} onContextMenu={handleBookmarkContextMenu}>
@@ -586,20 +625,151 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
               </svg>
             </button>
             <div className={`bookmark-panel${bookmarkPanelOpen ? ' open' : ''}`} ref={bookmarkPanelRef}>
-              <div className="bookmark-panel-header">Bookmarks</div>
+              <div className="bookmark-panel-header">
+                Bookmarks
+                {readingPosition !== null && (
+                  <button className="bookmark-return-btn" onClick={handleReturnToReading} title="Return to reading position">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 8h10M3 8l4-4M3 8l4 4"/>
+                    </svg>
+                    Back to {Math.round(readingPosition * 100)}%
+                  </button>
+                )}
+              </div>
               <div className="bookmark-list">
                 {bookmarks.length === 0 ? (
                   <div className="bookmark-empty">No bookmarks yet.<br/>Click the bookmark icon to add one.</div>
                 ) : (
                   bookmarks.map((b, i) => (
                     <div key={`${b.position}-${b.timestamp}`} className="bookmark-item" onClick={() => handleBookmarkNavigate(b.position)}>
-                      <span className="bookmark-item-label">{Math.round(b.position * 100)}%</span>
-                      <span className="bookmark-item-time">{formatTime(b.timestamp)}</span>
+                      <div className="bookmark-item-content">
+                        <div className="bookmark-item-top">
+                          <span className="bookmark-item-label">{Math.round(b.position * 100)}%</span>
+                          <span className="bookmark-item-time">{formatTime(b.timestamp)}</span>
+                        </div>
+                        {b.contextText && (
+                          <div className="bookmark-item-context">{b.contextText}</div>
+                        )}
+                      </div>
                       <button className="bookmark-item-delete" title="Remove"
                         onClick={(e) => { e.stopPropagation(); handleBookmarkDelete(i); }}>&times;</button>
                     </div>
                   ))
                 )}
+              </div>
+            </div>
+          </div>
+
+          {/* Settings gear button */}
+          <div className="settings-group">
+            <button
+              className={`settings-btn${settingsOpen ? ' active' : ''}`}
+              ref={settingsBtnRef}
+              onClick={() => setSettingsOpen(prev => !prev)}
+              title="Settings"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="8" cy="8" r="2.5"/>
+                <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M2.9 2.9l1.1 1.1M12 12l1.1 1.1M2.9 13.1l1.1-1.1M12 4l1.1-1.1"/>
+              </svg>
+            </button>
+            <div className={`settings-panel${settingsOpen ? ' open' : ''}`} ref={settingsPanelRef}>
+              <div className="settings-panel-header">Settings</div>
+              <div className="settings-panel-body">
+                {/* ── Voice Section ── */}
+                <div className="settings-section">
+                  <div className="settings-section-title">Voice</div>
+                  <div className="settings-row">
+                    <select className="voice-select" value={selectedGoogleVoice} onChange={handleGoogleVoiceSelect}>
+                      {googleVoices.some(v => v.isChirp3) && (
+                        <optgroup label="Chirp 3: HD">
+                          {googleVoices.filter(v => v.isChirp3).map(v => (
+                            <option key={v.name} value={v.name}>{v.displayName || v.name}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {googleVoices.some(v => !v.isChirp3) && (
+                        <optgroup label="Legacy">
+                          {googleVoices.filter(v => !v.isChirp3).map(v => {
+                            const parts = v.name.split('-');
+                            const type = parts[2] || '';
+                            const variant = parts[3] || '';
+                            return (
+                              <option key={v.name} value={v.name}>
+                                {`${type} ${variant}`.trim()} ({v.languageCodes[0]})
+                              </option>
+                            );
+                          })}
+                        </optgroup>
+                      )}
+                    </select>
+                    <button className="preview-btn" onClick={handleVoicePreview} title="Preview voice">Preview</button>
+                  </div>
+
+                  {/* Chirp voices don't support rate adjustment */}
+                  {!googleVoices.find(v => v.name === selectedGoogleVoice)?.isChirp3 && (
+                    <div className="settings-row">
+                      <span className="voice-rate-label">{voiceRate.toFixed(1)}x</span>
+                      <input type="range" className="voice-rate-slider" min="0.5" max="2.0" step="0.1" value={voiceRate} onChange={handleVoiceRateChange} />
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Font Section ── */}
+                <div className="settings-section">
+                  <div className="settings-section-title">Font</div>
+                  <div className="settings-row">
+                    <select className="settings-select" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}>
+                      {FONT_OPTIONS.map(f => (
+                        <option key={f.label} value={f.value}>{f.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <span className="settings-label">Weight</span>
+                    <input type="range" className="settings-slider" min="300" max="700" step="100" value={fontWeight} onChange={(e) => setFontWeight(parseInt(e.target.value, 10))} />
+                    <span className="settings-value">{fontWeight}</span>
+                  </div>
+                </div>
+
+                {/* ── Account Section ── */}
+                {cloudEnabled && userProfile && (
+                  <div className="settings-section">
+                    <div className="settings-section-title">Account</div>
+                    <div className="settings-account-row">
+                      {userProfile.picture && (
+                        <img className="settings-profile-pic" src={userProfile.picture} alt="" referrerPolicy="no-referrer" />
+                      )}
+                      <div className="settings-profile-info">
+                        <span className="settings-profile-name">{userProfile.name}</span>
+                        <span className="settings-profile-email">{userProfile.email}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Display Section ── */}
+                <div className="settings-section">
+                  <div className="settings-section-title">Display</div>
+                  <div className="settings-row">
+                    <div className="mode-tabs">
+                      {modes.map(m => (
+                        <button
+                          key={m.key}
+                          className={`mode-tab${currentMode === m.key ? ' active' : ''}`}
+                          onClick={() => handleModeChange(m.key)}
+                        >{m.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="settings-row">
+                    <label className="bionic-toggle">
+                      <span className="bionic-label">Bionic Reading</span>
+                      <input type="checkbox" checked={bionicEnabled} onChange={handleBionicChange} />
+                      <span className="bionic-slider"></span>
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

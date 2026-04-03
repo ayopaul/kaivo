@@ -65,12 +65,12 @@ export async function extractEpub(file: File): Promise<BookData> {
     const text = extractTextFromElement(body);
     if (text.trim()) {
       textParts.push(text.trim());
-      // +2 for the \n\n join separator
-      cumulativeLength += text.trim().length + 2;
+      // +5 for the \n\n\x05\n\n join separator
+      cumulativeLength += text.trim().length + 5;
     }
   }
 
-  const allText = textParts.join('\n\n');
+  const allText = textParts.join('\n\n\x05\n\n');
   const totalLength = allText.length;
 
   // 4. Extract TOC

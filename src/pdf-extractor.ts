@@ -62,7 +62,7 @@ export async function extractPdf(
     }
   }
 
-  const allText = textParts.join('\n\n');
+  const allText = textParts.join('\n\n\x05\n\n');
 
   let pageImages: PageImage[] = [];
   if (allText.length < 200 && totalPages > 0) {
@@ -101,7 +101,13 @@ export async function extractPdf(
   const toc = await extractPdfOutline(pdf);
   const title = file.name.replace(/\.pdf$/i, '');
 
-  return { title, pageImages, allText, toc, fileType: 'pdf' };
+  // Strip inline TOC from text if outline has entries
+  let finalText = allText;
+  if (toc.length > 0) {
+    finalText = stripInlineToc(allText, toc);
+  }
+
+  return { title, pageImages, allText: finalText, toc, fileType: 'pdf' };
 }
 
 /** Extract text from page items, detecting paragraphs and headings from layout */
@@ -189,6 +195,37 @@ function extractPageText(items: any[]): string {
   }
 
   return paragraphs.join('\n\n');
+}
+
+/** Strip inline TOC from the beginning of the text if outline entries match */
+function stripInlineToc(text: string, toc: TocEntry[]): string {
+  const paragraphs = text.split(/\n\n/);
+  // Only check first ~10% of paragraphs
+  const checkLimit = Math.max(5, Math.ceil(paragraphs.length * 0.1));
+  const tocTitles = new Set(toc.map(t => t.title.toLowerCase().trim()));
+
+  let lastTocIndex = -1;
+  for (let i = 0; i < Math.min(checkLimit, paragraphs.length); i++) {
+    const cleaned = paragraphs[i].replace(/\x04/g, '').replace(/\d+\s*$/, '').trim().toLowerCase();
+    if (cleaned && tocTitles.has(cleaned)) {
+      lastTocIndex = i;
+    }
+  }
+
+  // If we found a cluster of TOC matches at the start, remove them
+  if (lastTocIndex >= 2) {
+    // Check if at least 3 matches were found in the first chunk
+    let matchCount = 0;
+    for (let i = 0; i <= lastTocIndex; i++) {
+      const cleaned = paragraphs[i].replace(/\x04/g, '').replace(/\d+\s*$/, '').trim().toLowerCase();
+      if (cleaned && tocTitles.has(cleaned)) matchCount++;
+    }
+    if (matchCount >= 3) {
+      return paragraphs.slice(lastTocIndex + 1).join('\n\n');
+    }
+  }
+
+  return text;
 }
 
 async function extractPdfOutline(pdf: any): Promise<TocEntry[]> {

@@ -2,13 +2,14 @@ import React, { useRef, useState, useCallback } from 'react';
 import { BookData } from './pdf-extractor';
 import { extractPdf } from './pdf-extractor';
 import { extractEpub } from './epub-extractor';
-import { isSignedIn, saveBookFile, syncBookProgress } from './google-drive';
+import { isSignedIn, saveBookFile, syncBookProgress, GoogleUserProfile } from './google-drive';
 import { saveLibraryEntry } from './library-storage';
 
 interface LandingProps {
   onFileLoaded: (bookData: BookData, fileKey: string) => void;
   driveReady: boolean;
   driveSignedIn: boolean;
+  userProfile: GoogleUserProfile | null;
   onDriveSignIn: () => void;
   onDriveSignOut: () => void;
   onShowLibrary: () => void;
@@ -19,6 +20,7 @@ const Landing: React.FC<LandingProps> = ({
   onFileLoaded,
   driveReady,
   driveSignedIn,
+  userProfile,
   onDriveSignIn,
   onDriveSignOut,
   onShowLibrary,
@@ -140,13 +142,17 @@ const Landing: React.FC<LandingProps> = ({
       {driveReady && (
         <div className="drive-status">
           {driveSignedIn ? (
-            <button className="drive-btn drive-btn-connected" onClick={onDriveSignOut}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                <polyline points="22 4 12 14.01 9 11.01"/>
-              </svg>
-              Google Drive connected
-            </button>
+            <div className="drive-connected-info">
+              {userProfile?.picture && (
+                <img className="drive-profile-pic" src={userProfile.picture} alt="" referrerPolicy="no-referrer" />
+              )}
+              <div className="drive-profile-details">
+                {userProfile?.name && <span className="drive-profile-name">{userProfile.name}</span>}
+                <button className="drive-btn drive-btn-connected" onClick={onDriveSignOut}>
+                  Sign out of Google Drive
+                </button>
+              </div>
+            </div>
           ) : (
             <button className="drive-btn" onClick={onDriveSignIn}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

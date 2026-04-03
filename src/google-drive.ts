@@ -12,7 +12,7 @@
 
 const CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
 
-const SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
+const SCOPES = 'https://www.googleapis.com/auth/drive.appdata openid email profile';
 const PROGRESS_FILE = 'ebook-reader-progress.json';
 
 export interface CloudBookData {
@@ -32,6 +32,17 @@ let accessToken: string | null = null;
 let tokenClient: any = null;
 let gisLoaded = false;
 
+export interface GoogleUserProfile {
+  name: string;
+  email: string;
+  picture: string;
+}
+
+let cachedProfile: GoogleUserProfile | null = null;
+
+const TOKEN_KEY = 'ebook:drive:token';
+const PROFILE_KEY = 'ebook:drive:profile';
+
 /** Whether a client ID has been configured */
 export function isConfigured(): boolean {
   return CLIENT_ID.length > 10;
@@ -39,7 +50,39 @@ export function isConfigured(): boolean {
 
 /** Whether the user is currently signed in */
 export function isSignedIn(): boolean {
-  return !!accessToken;
+  if (accessToken) return true;
+  // Restore persisted token
+  const stored = localStorage.getItem(TOKEN_KEY);
+  if (stored) {
+    accessToken = stored;
+    const profileJson = localStorage.getItem(PROFILE_KEY);
+    if (profileJson) try { cachedProfile = JSON.parse(profileJson); } catch { /* */ }
+    return true;
+  }
+  return false;
+}
+
+/** Get the cached user profile (name, email, picture) */
+export function getUserProfile(): GoogleUserProfile | null {
+  if (!cachedProfile) {
+    const profileJson = localStorage.getItem(PROFILE_KEY);
+    if (profileJson) try { cachedProfile = JSON.parse(profileJson); } catch { /* */ }
+  }
+  return cachedProfile;
+}
+
+/** Fetch user profile from Google and cache it */
+async function fetchAndCacheProfile(): Promise<void> {
+  if (!accessToken) return;
+  try {
+    const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    cachedProfile = { name: data.name || '', email: data.email || '', picture: data.picture || '' };
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(cachedProfile));
+  } catch { /* ignore */ }
 }
 
 /** Load the Google Identity Services script and init the token client */
@@ -67,6 +110,31 @@ export async function initGoogleAuth(): Promise<void> {
     scope: SCOPES,
     callback: () => {},
   });
+
+  // Restore persisted token and validate it
+  const storedToken = localStorage.getItem(TOKEN_KEY);
+  if (storedToken) {
+    accessToken = storedToken;
+    // Validate token with a lightweight call
+    try {
+      const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${storedToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        cachedProfile = { name: data.name || '', email: data.email || '', picture: data.picture || '' };
+        localStorage.setItem(PROFILE_KEY, JSON.stringify(cachedProfile));
+      } else {
+        // Token expired
+        accessToken = null;
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(PROFILE_KEY);
+      }
+    } catch {
+      accessToken = null;
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  }
 }
 
 /** Trigger Google sign-in popup. Returns the access token. */
@@ -77,12 +145,14 @@ export function signIn(): Promise<string> {
       return;
     }
 
-    tokenClient.callback = (response: any) => {
+    tokenClient.callback = async (response: any) => {
       if (response.error) {
         reject(new Error(response.error));
         return;
       }
       accessToken = response.access_token;
+      localStorage.setItem(TOKEN_KEY, accessToken!);
+      await fetchAndCacheProfile();
       resolve(accessToken!);
     };
 
@@ -98,6 +168,9 @@ export function signOut(): void {
     } catch { /* ignore */ }
     accessToken = null;
   }
+  cachedProfile = null;
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(PROFILE_KEY);
 }
 
 // ── Drive file operations ──
@@ -108,6 +181,11 @@ async function driveGet(url: string): Promise<any> {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      // Token expired — clear persisted token
+      accessToken = null;
+      localStorage.removeItem(TOKEN_KEY);
+    }
     const body = await res.text().catch(() => '');
     console.error(`[google-drive] GET failed ${res.status}: ${res.statusText}`, body);
     throw new Error(`Drive API ${res.status}: ${res.statusText}`);

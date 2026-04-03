@@ -465,8 +465,12 @@ html, body {
 
   .bookmark-panel {
     width: calc(100vw - 2rem);
-    max-width: 240px;
+    max-width: 320px;
     right: -0.5rem;
+  }
+
+  .bookmark-list {
+    max-height: 50dvh;
   }
 
   .bottom-bar-content {
@@ -474,8 +478,10 @@ html, body {
     padding: 0.35rem 0.5rem;
   }
 
-  .voice-panel {
-    bottom: calc(46px + env(safe-area-inset-bottom, 0px));
+  .settings-panel {
+    width: calc(100vw - 2rem);
+    max-width: 300px;
+    right: -0.5rem;
   }
 
   .landing h1 {
@@ -669,7 +675,7 @@ html, body {
   position: absolute;
   bottom: calc(100% + 8px);
   right: 0;
-  width: 240px;
+  width: 280px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -695,6 +701,33 @@ html, body {
   color: var(--text-muted);
   padding: 0.6rem 0.8rem 0.4rem;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.bookmark-return-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 0.65rem;
+  font-family: var(--font-body);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.bookmark-return-btn:hover {
+  background: var(--bg-surface);
+  border-color: var(--accent);
 }
 
 .bookmark-list {
@@ -712,7 +745,7 @@ html, body {
 
 .bookmark-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   padding: 0.5rem 0.8rem;
   cursor: pointer;
@@ -783,13 +816,83 @@ html, body {
 }
 
 .drive-btn-connected {
-  border-color: #22c55e40;
-  color: #22c55e;
+  border: none;
+  padding: 0.3rem 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
 }
 
 .drive-btn-connected:hover {
-  border-color: #ef444460;
+  border-color: transparent;
   color: #ef4444;
+}
+
+.drive-connected-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.drive-profile-pic {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.drive-profile-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.drive-profile-name {
+  font-size: 0.85rem;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.reader-profile-pic {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.settings-account-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.25rem 0;
+}
+
+.settings-profile-pic {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.settings-profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.settings-profile-name {
+  font-size: 0.8rem;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.settings-profile-email {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cloud-sync-btn {
@@ -826,6 +929,11 @@ html, body {
   background: var(--bg-surface);
   border-top: 1px solid var(--border);
   padding-bottom: env(safe-area-inset-bottom, 0px);
+  transition: transform 0.3s ease;
+}
+
+.reader-bottom-bar.hidden {
+  transform: translateY(100%);
 }
 
 .bottom-progress-bar {
@@ -1061,4 +1169,171 @@ html, body {
   margin-top: 1rem;
   font-size: 0.8rem;
   color: var(--text-muted);
+}
+
+/* ===== Settings Panel ===== */
+.settings-group {
+  position: relative;
+}
+
+.settings-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.settings-btn:hover,
+.settings-btn.active {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.settings-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 300px;
+  max-height: 70dvh;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 0.15s, transform 0.15s, visibility 0.15s;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-panel.open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.settings-panel-header {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 0.6rem 0.8rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.settings-panel-body {
+  overflow-y: auto;
+  flex: 1;
+  padding: 0.4rem 0;
+}
+
+.settings-section {
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings-select {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-family: var(--font-body);
+  min-width: 0;
+}
+
+.settings-slider {
+  flex: 1;
+  accent-color: var(--text-muted);
+  height: 4px;
+}
+
+.settings-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  min-width: 2.5rem;
+}
+
+.settings-value {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  min-width: 1.8rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  font-family: var(--font-body);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.preview-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Bookmark context text */
+.bookmark-item-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.bookmark-item-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bookmark-item-context {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.7;
 }
