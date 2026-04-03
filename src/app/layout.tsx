@@ -2,13 +2,13 @@ import type { Metadata, Viewport } from 'next';
 import '../style.css';
 
 export const metadata: Metadata = {
-  title: 'Ebook Reader',
+  title: 'Kaivo',
   description: 'A gesture-driven reading experience with pinch-to-zoom, scroll morph, and HD voice reading.',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Reader',
+    title: 'Kaivo',
   },
   other: {
     'mobile-web-app-capable': 'yes',
@@ -28,6 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <head>
+        <meta name="google-site-verification" content="6v-1oXRI-BanWH2j67FoTP8a-gOlePZvPi2BfjLlHSs" />
         <link rel="icon" href="/favicon.ico" sizes="any" />
         <link rel="icon" href="/icons/icon-192.png" type="image/png" />
         <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />

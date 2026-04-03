@@ -1,6 +1,6 @@
 {
-  "name": "Ebook Reader",
-  "short_name": "Reader",
+  "name": "Kaivo",
+  "short_name": "Kaivo",
   "description": "A gesture-driven reading experience with pinch-to-zoom, scroll morph, and HD voice reading.",
   "start_url": "/",
   "display": "standalone",

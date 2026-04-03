@@ -112,7 +112,7 @@ const Landing: React.FC<LandingProps> = ({
   return (
     <div className="landing">
       <img className="landing-logo" src="/icons/icon-512.png" alt="" width="256" height="256" />
-      <h1>Reader</h1>
+      <h1>Kaivo</h1>
       <p>A gesture-driven reading experience with pinch-to-zoom, scroll morph, and HD voice reading.</p>
 
       {/* Google Drive sync — primary CTA when not signed in */}
