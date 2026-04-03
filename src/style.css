@@ -496,14 +496,26 @@ html, body {
     max-height: 60dvh;
   }
 
-  .bookmark-panel {
-    width: calc(100vw - 2rem);
-    max-width: 320px;
-    right: -0.5rem;
+  .bookmark-panel,
+  .settings-panel,
+  .toc-panel {
+    position: fixed;
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    left: 0.5rem;
+    right: 0.5rem;
+    width: auto;
+    max-width: none;
+    max-height: 55dvh;
+    border-radius: 12px 12px 0 0;
   }
 
   .bookmark-list {
-    max-height: 50dvh;
+    max-height: 45dvh;
+  }
+
+  .settings-panel-body {
+    max-height: 48dvh;
+    overflow-y: auto;
   }
 
   .bottom-bar-content {
@@ -511,10 +523,10 @@ html, body {
     padding: 0.35rem 0.5rem;
   }
 
-  .settings-panel {
-    width: calc(100vw - 2rem);
-    max-width: 300px;
-    right: -0.5rem;
+  .landing-logo {
+    width: 140px;
+    height: 140px;
+    border-radius: 20px;
   }
 
   .landing h1 {
@@ -522,7 +534,7 @@ html, body {
   }
 
   .landing p {
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     padding: 0 1rem;
   }
 

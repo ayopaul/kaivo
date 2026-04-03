@@ -86,7 +86,7 @@ export class CanvasRenderer {
   /** Compute padding based on viewport width */
   private getPadding(): number {
     const w = this.canvas.getBoundingClientRect().width;
-    return w < 500 ? 8 : w < 768 ? 20 : 40;
+    return w < 500 ? 16 : w < 768 ? 24 : 40;
   }
 
   /** Even less padding for images on small screens */
@@ -121,7 +121,8 @@ export class CanvasRenderer {
   private selectionStart: { block: number; charIndex: number } | null = null;
   private selectionEnd: { block: number; charIndex: number } | null = null;
   private isSelecting = false;
-  private cursorPosition: { block: number; charIndex: number } | null = null;
+  private dragStartHit: { block: number; charIndex: number } | null = null;
+  private cursorPosition: { block: number; charIndex: number; wordEnd?: number } | null = null;
   private cursorVisible = true;
   private cursorBlinkTimer = 0;
 
@@ -409,7 +410,7 @@ export class CanvasRenderer {
     const weightStr = this.fontWeight.toString();
     this.ctx.font = `${weightStr} ${fontSize}px ${this.fontFamily}`;
 
-    let y = pad;
+    let y = pad + fontSize; // start below top padding so first line isn't clipped
     const paragraphs = text.split(/\n+/);
 
     // Build the same stripped text the voice reader produces, to compute matching global offsets.
@@ -785,16 +786,29 @@ export class CanvasRenderer {
     return (block.charOffset ?? 0) + this.cursorPosition.charIndex;
   }
 
-  /** Find word boundaries at a given char index within a block */
+  /** Find word boundaries at a given char index within a block.
+   *  If charIndex lands on whitespace, snaps to the nearest word. */
   private getWordBounds(blockIndex: number, charIndex: number): { start: number; end: number } {
     const text = this.getBlockText(blockIndex);
     if (!text) return { start: charIndex, end: charIndex };
-    let start = Math.min(charIndex, text.length - 1);
-    let end = start;
-    if (start < 0) start = 0;
-    // Expand backward to word boundary
+    let idx = Math.max(0, Math.min(charIndex, text.length - 1));
+
+    // If on whitespace, find nearest non-whitespace character
+    if (/\s/.test(text[idx] || '')) {
+      // Look forward then backward for a word character
+      let fwd = idx, bwd = idx;
+      while (fwd < text.length && /\s/.test(text[fwd])) fwd++;
+      while (bwd > 0 && /\s/.test(text[bwd])) bwd--;
+      // Pick whichever is closer
+      const fwdDist = fwd < text.length ? fwd - idx : Infinity;
+      const bwdDist = bwd >= 0 && /\S/.test(text[bwd]) ? idx - bwd : Infinity;
+      idx = fwdDist <= bwdDist ? fwd : bwd;
+    }
+
+    if (idx >= text.length || /\s/.test(text[idx] || '')) return { start: charIndex, end: charIndex };
+
+    let start = idx, end = idx;
     while (start > 0 && /\S/.test(text[start - 1])) start--;
-    // Expand forward to word boundary
     while (end < text.length && /\S/.test(text[end])) end++;
     return { start, end };
   }
@@ -811,19 +825,19 @@ export class CanvasRenderer {
   }
 
   private onMouseDown(e: MouseEvent) {
-    // Don't start selection if it's a touch device simulating mouse
     if (e.button !== 0) return;
 
     const hit = this.hitTestText(e.clientX, e.clientY);
     if (!hit) return;
 
     this.isSelecting = true;
+    this.dragStartHit = hit;
 
-    // Snap to whole word
+    // Set cursor on the word (no selection yet — selection only on drag)
     const bounds = this.getWordBounds(hit.block, hit.charIndex);
-    this.selectionStart = { block: hit.block, charIndex: bounds.start };
-    this.selectionEnd = { block: hit.block, charIndex: bounds.end };
-    this.cursorPosition = { block: hit.block, charIndex: bounds.start };
+    this.selectionStart = null;
+    this.selectionEnd = null;
+    this.cursorPosition = { block: hit.block, charIndex: bounds.start, wordEnd: bounds.end };
     this.cursorVisible = true;
     this.onCursorChange?.(this.getCursorCharOffset());
   }
@@ -887,14 +901,18 @@ export class CanvasRenderer {
 
   /** Update cursor style and handle drag selection */
   private onMouseMove(e: MouseEvent) {
-    // Handle drag selection — extend by whole words
-    if (this.isSelecting) {
+    // Handle drag selection — only start selection when dragged to a different word
+    if (this.isSelecting && this.dragStartHit) {
       const hit = this.hitTestText(e.clientX, e.clientY);
       if (hit) {
-        const bounds = this.getWordBounds(hit.block, hit.charIndex);
-        // Extend selection end to word boundary
-        this.selectionEnd = { block: hit.block, charIndex: bounds.end };
-        this.cursorPosition = { block: hit.block, charIndex: bounds.end };
+        const startBounds = this.getWordBounds(this.dragStartHit.block, this.dragStartHit.charIndex);
+        const endBounds = this.getWordBounds(hit.block, hit.charIndex);
+        // Only create selection if dragged to a different word
+        if (hit.block !== this.dragStartHit.block || endBounds.start !== startBounds.start) {
+          this.selectionStart = { block: this.dragStartHit.block, charIndex: startBounds.start };
+          this.selectionEnd = { block: hit.block, charIndex: endBounds.end };
+          this.cursorPosition = { block: hit.block, charIndex: endBounds.end };
+        }
       }
       this.canvas.style.cursor = 'text';
       return;
@@ -1067,6 +1085,17 @@ export class CanvasRenderer {
 
   private renderSelection(pad: number, viewH: number) {
     const baseScale = (this.mode === 'pinch' || this.mode === 'combined') ? this.pinchScale : 1;
+    const viewCenterY = viewH / 2;
+    const morphRadiusPx = viewH * this.morphRadius;
+    const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
+
+    const getMorphScale = (drawY: number) => {
+      if (!isMorph) return 1;
+      const distFromCenter = Math.abs(drawY - viewCenterY);
+      const normalizedDist = Math.min(distFromCenter / morphRadiusPx, 1);
+      const falloff = (1 + Math.cos(normalizedDist * Math.PI)) / 2;
+      return 1 + (this.morphStrength - 1) * falloff;
+    };
 
     // Draw selection highlight
     if (this.selectionStart && this.selectionEnd) {
@@ -1086,7 +1115,8 @@ export class CanvasRenderer {
         const drawY = block.y * baseScale - this.scrollY;
         if (drawY < -100 || drawY > viewH + 100) continue;
 
-        const fontSize = block.baseFontSize * baseScale;
+        const morphScale = getMorphScale(drawY);
+        const fontSize = block.baseFontSize * baseScale * morphScale;
         const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
         this.ctx.font = `${paraWeight} ${fontSize}px ${this.fontFamily}`;
         const lineText = block.runs.map(r => r.text).join('');
@@ -1097,7 +1127,7 @@ export class CanvasRenderer {
 
         if (s === e) continue;
 
-        const spacing = (block.extraWordSpacing ?? 0) * baseScale;
+        const spacing = (block.extraWordSpacing ?? 0) * baseScale * morphScale;
         const x1 = this.measureTextWithSpacing(lineText, 0, s, spacing, startX);
         const x2 = this.measureTextWithSpacing(lineText, 0, e, spacing, startX);
         const lineH = fontSize * this.lineHeight;
@@ -1114,28 +1144,31 @@ export class CanvasRenderer {
       if (block && block.kind === 'text') {
         const drawY = block.y * baseScale - this.scrollY;
         if (drawY > -100 && drawY < viewH + 100) {
-          const fontSize = block.baseFontSize * baseScale;
+          const morphScale = getMorphScale(drawY);
+          const fontSize = block.baseFontSize * baseScale * morphScale;
           const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
           this.ctx.font = `${paraWeight} ${fontSize}px ${this.fontFamily}`;
           const lineText = block.runs.map(r => r.text).join('');
           const startX = pad * baseScale;
 
-          // Find word bounds at cursor
-          const text = lineText;
-          let wStart = this.cursorPosition.charIndex;
-          let wEnd = wStart;
-          while (wStart > 0 && /\S/.test(text[wStart - 1])) wStart--;
-          while (wEnd < text.length && /\S/.test(text[wEnd])) wEnd++;
+          // Use stored word bounds
+          const wStart = this.cursorPosition.charIndex;
+          const wEnd = this.cursorPosition.wordEnd ?? wStart;
 
           if (wStart < wEnd) {
-            const spacing = (block.extraWordSpacing ?? 0) * baseScale;
-            const x1 = this.measureTextWithSpacing(text, 0, wStart, spacing, startX);
-            const x2 = this.measureTextWithSpacing(text, 0, wEnd, spacing, startX);
+            const spacing = (block.extraWordSpacing ?? 0) * baseScale * morphScale;
+            const x1 = this.measureTextWithSpacing(lineText, 0, wStart, spacing, startX);
+            const x2 = this.measureTextWithSpacing(lineText, 0, wEnd, spacing, startX);
             const lineH = fontSize * this.lineHeight;
+            const wordW = x2 - x1;
+            const hPad = fontSize * 0.1;
+            const radius = lineH * 0.2; // 20% border radius
 
             this.ctx.save();
             this.ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-            this.ctx.fillRect(x1, drawY - fontSize, x2 - x1, lineH);
+            this.ctx.beginPath();
+            this.ctx.roundRect(x1 - hPad, drawY - fontSize, wordW + hPad * 2, lineH, radius);
+            this.ctx.fill();
             this.ctx.restore();
           }
         }
@@ -1150,12 +1183,14 @@ export class CanvasRenderer {
 
   /** Render highlighted word during TTS playback */
   private renderHighlightedWord(pad: number, viewH: number, baseScale: number) {
+    const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
+    const viewCenterY = viewH / 2;
+    const morphRadiusPx = viewH * this.morphRadius;
+
     if (this.highlightedWordOffset === null) {
-      // Fade out
       this.highlightRect.opacity *= 0.85;
       if (this.highlightRect.opacity < 0.005) return;
     } else {
-      // Find target rect for the current word using block charOffset
       let found = false;
       for (let bi = 0; bi < this.blocks.length; bi++) {
         const block = this.blocks[bi];
@@ -1169,7 +1204,16 @@ export class CanvasRenderer {
         const drawY = block.y * baseScale - this.scrollY;
         if (drawY < -100 || drawY > viewH + 100) break;
 
-        const fontSize = block.baseFontSize * baseScale;
+        // Compute morph scale for this line
+        let morphScale = 1;
+        if (isMorph) {
+          const distFromCenter = Math.abs(drawY - viewCenterY);
+          const normalizedDist = Math.min(distFromCenter / morphRadiusPx, 1);
+          const falloff = (1 + Math.cos(normalizedDist * Math.PI)) / 2;
+          morphScale = 1 + (this.morphStrength - 1) * falloff;
+        }
+
+        const fontSize = block.baseFontSize * baseScale * morphScale;
         const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
         this.ctx.font = `${paraWeight} ${fontSize}px ${this.fontFamily}`;
         const startX = pad * baseScale;
@@ -1181,8 +1225,7 @@ export class CanvasRenderer {
         while (wEnd < lineText.length && /\S/.test(lineText[wEnd])) wEnd++;
 
         if (wStart < wEnd) {
-          // Account for justified text extra word spacing (scaled for zoom)
-          const scaledSpacing = (block.extraWordSpacing ?? 0) * baseScale;
+          const scaledSpacing = (block.extraWordSpacing ?? 0) * baseScale * morphScale;
           const x1 = this.measureTextWithSpacing(lineText, 0, wStart, scaledSpacing, startX);
           const x2 = this.measureTextWithSpacing(lineText, 0, wEnd, scaledSpacing, startX);
           const lineH = fontSize * this.lineHeight;

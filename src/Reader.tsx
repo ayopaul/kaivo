@@ -379,6 +379,8 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
   const handleBookmarkClick = useCallback(() => {
     setBookmarkPanelOpen(prev => !prev);
+    setSettingsOpen(false);
+    setTocOpen(false);
   }, []);
 
   const handleBookmarkAdd = useCallback(() => {
@@ -451,14 +453,12 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
     if (vr.isPlaying()) {
       vr.pause();
-      // Keep the highlight visible while paused (don't clear it)
-    } else if (vr.isPaused()) {
-      vr.play();
     } else {
-      // Start fresh — seek to current cursor position if available, else reading progress
+      // Whether resuming from pause or starting fresh, always seek to current visible position
       const renderer = rendererRef.current;
-      const cursorOffset = renderer?.getCursorCharOffset?.() ?? 0;
-      const charOffset = cursorOffset > 0 ? cursorOffset : Math.floor(progress * bookData.allText.length);
+      const currentProgress = renderer?.getProgress() ?? progress;
+      const charOffset = Math.floor(currentProgress * bookData.allText.length);
+      vr.stop();
       vr.seekToOffset(charOffset);
       vr.play();
     }
@@ -587,7 +587,7 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
                 <button
                   className={`toc-btn${tocOpen ? ' active' : ''}`}
                   ref={tocBtnRef}
-                  onClick={() => setTocOpen(prev => !prev)}
+                  onClick={() => { setTocOpen(prev => !prev); setSettingsOpen(false); setBookmarkPanelOpen(false); }}
                   title="Table of Contents"
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -693,7 +693,7 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
             <button
               className={`settings-btn${settingsOpen ? ' active' : ''}`}
               ref={settingsBtnRef}
-              onClick={() => setSettingsOpen(prev => !prev)}
+              onClick={() => { setSettingsOpen(prev => !prev); setBookmarkPanelOpen(false); setTocOpen(false); }}
               title="Settings"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
