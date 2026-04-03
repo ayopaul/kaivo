@@ -53,6 +53,13 @@ function loadFontWeight(): number {
 function saveFontWeight(weight: number) {
   try { localStorage.setItem('ebook:settings:fontWeight', String(weight)); } catch { /* */ }
 }
+type Theme = 'dark' | 'light';
+function loadTheme(): Theme {
+  try { return (localStorage.getItem('ebook:settings:theme') as Theme) || 'dark'; } catch { return 'dark'; }
+}
+function saveTheme(theme: Theme) {
+  try { localStorage.setItem('ebook:settings:theme', theme); } catch { /* */ }
+}
 
 const FONT_OPTIONS = [
   { label: 'Playfair Display', value: "'Playfair Display', Georgia, serif" },
@@ -88,6 +95,9 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
   // Bottom bar auto-hide
   const [bottomBarVisible, setBottomBarVisible] = useState(true);
+
+  // Theme
+  const [theme, setTheme] = useState<Theme>(loadTheme);
 
   // Font settings
   const [fontFamily, setFontFamily] = useState(loadFontFamily);
@@ -294,6 +304,15 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     rendererRef.current?.setFontWeight(fontWeight);
     saveFontWeight(fontWeight);
   }, [fontWeight]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    saveTheme(theme);
+    // Update canvas text color
+    rendererRef.current?.setTextColor(
+      theme === 'light' ? '#2c1e0e' : '#e8e8e8'
+    );
+  }, [theme]);
 
   // Close panels when clicking outside
   useEffect(() => {
@@ -786,6 +805,22 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
                 {/* ── Display Section ── */}
                 <div className="settings-section">
                   <div className="settings-section-title">Display</div>
+                  <div className="settings-row">
+                    <div className="theme-tabs">
+                      <button className={`theme-tab${theme === 'dark' ? ' active' : ''}`} onClick={() => setTheme('dark')}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                        </svg>
+                        Dark
+                      </button>
+                      <button className={`theme-tab${theme === 'light' ? ' active' : ''}`} onClick={() => setTheme('light')}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                        </svg>
+                        Light
+                      </button>
+                    </div>
+                  </div>
                   <div className="settings-row">
                     <div className="mode-tabs">
                       {modes.map(m => (

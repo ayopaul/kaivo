@@ -76,6 +76,7 @@ export class CanvasRenderer {
   private pageGap = 30;
   private fontFamily = "'Inter', system-ui, sans-serif";
   private fontWeight = 400;
+  private textColor = '#e8e8e8';
 
   // Word highlighting for TTS
   private highlightedWordOffset: number | null = null;
@@ -236,6 +237,10 @@ export class CanvasRenderer {
         this.setScrollProgress(savedProgress);
       }
     }
+  }
+
+  setTextColor(color: string) {
+    this.textColor = color;
   }
 
   setHighlightedWord(charOffset: number | null) {
@@ -1165,7 +1170,7 @@ export class CanvasRenderer {
             const radius = lineH * 0.2; // 20% border radius
 
             this.ctx.save();
-            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+            this.ctx.fillStyle = this.textColor === '#e8e8e8' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(44, 30, 14, 0.08)';
             this.ctx.beginPath();
             this.ctx.roundRect(x1 - hPad, drawY - fontSize, wordW + hPad * 2, lineH, radius);
             this.ctx.fill();
@@ -1175,99 +1180,15 @@ export class CanvasRenderer {
       }
     }
 
-    // Draw TTS word highlight (always call to allow fade-out animation)
-    if (this.highlightedWordOffset !== null || this.highlightRect.opacity > 0.005) {
-      this.renderHighlightedWord(pad, viewH, baseScale);
+    // TTS auto-scroll only — no word highlight background
+    if (this.highlightedWordOffset !== null) {
+      this.updateHighlightScroll(pad, viewH, baseScale);
     }
   }
 
-  /** Render highlighted word during TTS playback */
-  private renderHighlightedWord(pad: number, viewH: number, baseScale: number) {
-    const isMorph = this.mode === 'scroll-morph' || this.mode === 'combined';
-    const viewCenterY = viewH / 2;
-    const morphRadiusPx = viewH * this.morphRadius;
-
-    if (this.highlightedWordOffset === null) {
-      this.highlightRect.opacity *= 0.85;
-      if (this.highlightRect.opacity < 0.005) return;
-    } else {
-      let found = false;
-      for (let bi = 0; bi < this.blocks.length; bi++) {
-        const block = this.blocks[bi];
-        if (block.kind !== 'text') continue;
-        const blockStart = block.charOffset ?? 0;
-        const lineText = block.runs.map(r => r.text).join('');
-        const blockEnd = blockStart + lineText.length;
-        if (this.highlightedWordOffset < blockStart || this.highlightedWordOffset >= blockEnd) continue;
-
-        const localOffset = this.highlightedWordOffset - blockStart;
-        const drawY = block.y * baseScale - this.scrollY;
-        if (drawY < -100 || drawY > viewH + 100) break;
-
-        // Compute morph scale for this line
-        let morphScale = 1;
-        if (isMorph) {
-          const distFromCenter = Math.abs(drawY - viewCenterY);
-          const normalizedDist = Math.min(distFromCenter / morphRadiusPx, 1);
-          const falloff = (1 + Math.cos(normalizedDist * Math.PI)) / 2;
-          morphScale = 1 + (this.morphStrength - 1) * falloff;
-        }
-
-        const fontSize = block.baseFontSize * baseScale * morphScale;
-        const paraWeight = block.isHeading ? '600' : this.fontWeight.toString();
-        this.ctx.font = `${paraWeight} ${fontSize}px ${this.fontFamily}`;
-        const startX = pad * baseScale;
-
-        let wStart = Math.min(localOffset, lineText.length - 1);
-        let wEnd = wStart;
-        if (wStart < 0) break;
-        while (wStart > 0 && /\S/.test(lineText[wStart - 1])) wStart--;
-        while (wEnd < lineText.length && /\S/.test(lineText[wEnd])) wEnd++;
-
-        if (wStart < wEnd) {
-          const scaledSpacing = (block.extraWordSpacing ?? 0) * baseScale * morphScale;
-          const x1 = this.measureTextWithSpacing(lineText, 0, wStart, scaledSpacing, startX);
-          const x2 = this.measureTextWithSpacing(lineText, 0, wEnd, scaledSpacing, startX);
-          const lineH = fontSize * this.lineHeight;
-          const wordW = x2 - x1;
-          const hPad = fontSize * 0.15; // horizontal padding for center-aligned bg
-          this.highlightTarget.x = x1 - hPad;
-          this.highlightTarget.y = drawY - fontSize;
-          this.highlightTarget.w = wordW + hPad * 2;
-          this.highlightTarget.h = lineH;
-          found = true;
-        }
-        break;
-      }
-      if (!found) return;
-
-      // Lerp toward target
-      const speed = 0.18;
-      const r = this.highlightRect;
-      const t = this.highlightTarget;
-      if (r.opacity < 0.01) {
-        // First appearance — snap to position
-        r.x = t.x; r.y = t.y; r.w = t.w; r.h = t.h;
-      } else {
-        r.x += (t.x - r.x) * speed;
-        r.y += (t.y - r.y) * speed;
-        r.w += (t.w - r.w) * speed;
-        r.h += (t.h - r.h) * speed;
-      }
-      r.opacity += (1 - r.opacity) * 0.25;
-    }
-
-    // Draw rounded rect highlight
-    const r = this.highlightRect;
-    if (r.opacity < 0.005 || r.w < 1) return;
-    const radius = r.h * 0.1; // 10% border radius
-    this.ctx.save();
-    this.ctx.globalAlpha = r.opacity;
-    this.ctx.fillStyle = 'rgba(255, 200, 50, 0.12)';
-    this.ctx.beginPath();
-    this.ctx.roundRect(r.x, r.y, r.w, r.h, radius);
-    this.ctx.fill();
-    this.ctx.restore();
+  /** Track TTS position for auto-scroll (no visual highlight) */
+  private updateHighlightScroll(_pad: number, _viewH: number, _baseScale: number) {
+    // Auto-scroll is handled in setHighlightedWord — nothing to draw
   }
 
   /** Draw runs with link styling and justification */
@@ -1291,7 +1212,7 @@ export class CanvasRenderer {
       let pos = 0;
       for (const token of words) {
         const isLink = linkRanges.some(r => pos >= r.start && pos < r.end);
-        this.ctx.fillStyle = isLink ? '#6db3f2' : (isHeading ? '#ffffff' : '#e8e8e8');
+        this.ctx.fillStyle = isLink ? '#6db3f2' : this.textColor;
 
         if (/^\s+$/.test(token)) {
           cursorX += extraWordSpacing;
@@ -1328,7 +1249,7 @@ export class CanvasRenderer {
 
         cursorX += textWidth;
       } else {
-        this.ctx.fillStyle = isHeading ? '#ffffff' : '#e8e8e8';
+        this.ctx.fillStyle = this.textColor;
         this.ctx.fillText(run.text, cursorX, y);
         cursorX += this.ctx.measureText(run.text).width;
       }
@@ -1352,8 +1273,8 @@ export class CanvasRenderer {
         const boldPart = token.slice(0, boldLen);
         const lightPart = token.slice(boldLen);
 
-        const baseColor = run.href ? '#6db3f2' : '#e8e8e8';
-        const lightColor = run.href ? '#4a8ac7' : '#999';
+        const baseColor = run.href ? '#6db3f2' : this.textColor;
+        const lightColor = run.href ? '#4a8ac7' : (this.textColor === '#e8e8e8' ? '#999' : 'rgba(44, 30, 14, 0.5)');
 
         this.ctx.font = `700 ${fontSize}px ${this.fontFamily}`;
         this.ctx.fillStyle = baseColor;

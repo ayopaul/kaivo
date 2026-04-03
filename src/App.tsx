@@ -30,6 +30,10 @@ const App: React.FC = () => {
   const deferredPromptRef = useRef<any>(null);
 
   useEffect(() => {
+    // Apply saved theme
+    const savedTheme = localStorage.getItem('ebook:settings:theme');
+    if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+
     setHasLibrary(loadLocalLibrary().length > 0);
 
     if (isDriveConfigured()) {
