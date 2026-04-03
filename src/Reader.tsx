@@ -169,7 +169,7 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
           // Try exact match, then fuzzy match (bare name → full API name), then default to Algieba
           let voice = saved ? v.find(x => x.name === saved) : null;
           if (!voice && saved) voice = v.find(x => x.name.toLowerCase().includes(saved.toLowerCase()));
-          if (!voice) voice = v.find(x => /Algieba/i.test(x.name));
+          if (!voice) voice = v.find(x => /Algenib/i.test(x.name));
           if (!voice) voice = v[0];
 
           setSelectedGoogleVoice(voice.name);

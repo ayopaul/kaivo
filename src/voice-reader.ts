@@ -236,11 +236,12 @@ export class VoiceReader {
       const chunkStart = this.currentPosition;
       this.onProgress?.(chunkStart);
 
-      // Pre-fetch the next chunk while this one plays
-      const nextChunk = this.currentChunkIndex + 1 < this.chunks.length
-        ? this.chunks[this.currentChunkIndex + 1] : null;
-      if (nextChunk) {
-        googlePrefetch(nextChunk, voiceName, langCode, this.rate);
+      // Pre-fetch next 2 chunks while this one plays
+      for (let ahead = 1; ahead <= 2; ahead++) {
+        const nextIdx = this.currentChunkIndex + ahead;
+        if (nextIdx < this.chunks.length) {
+          googlePrefetch(this.chunks[nextIdx], voiceName, langCode, this.rate);
+        }
       }
 
       try {

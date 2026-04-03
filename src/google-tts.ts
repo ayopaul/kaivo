@@ -155,19 +155,28 @@ export async function synthesize(
 // ── Pre-fetch cache for gapless playback ──
 const prefetchCache = new Map<string, Promise<Blob>>();
 
-/** Pre-fetch audio for a chunk so it's ready when needed */
+function cacheKey(text: string): string {
+  // Use first 100 chars + length for uniqueness
+  return text.slice(0, 100) + ':' + text.length;
+}
+
+/** Pre-fetch audio for a chunk (including split parts) so it's ready when needed */
 export function prefetch(text: string, voiceName: string, languageCode: string, rate: number = 1.0): void {
-  const key = text.slice(0, 80); // use first 80 chars as cache key
-  if (prefetchCache.has(key)) return;
-  const promise = synthesize(text, voiceName, languageCode, rate);
-  prefetchCache.set(key, promise);
-  // Clean up after 60s to avoid memory leaks
-  promise.then(() => setTimeout(() => prefetchCache.delete(key), 60000)).catch(() => prefetchCache.delete(key));
+  const maxLen = 4500;
+  const parts = text.length > maxLen ? splitText(text, maxLen) : [text];
+
+  for (const part of parts) {
+    const key = cacheKey(part);
+    if (prefetchCache.has(key)) continue;
+    const promise = synthesize(part, voiceName, languageCode, rate);
+    prefetchCache.set(key, promise);
+    promise.then(() => setTimeout(() => prefetchCache.delete(key), 90000)).catch(() => prefetchCache.delete(key));
+  }
 }
 
 /** Get a cached blob or synthesize fresh */
 async function synthesizeWithCache(text: string, voiceName: string, languageCode: string, rate: number): Promise<Blob> {
-  const key = text.slice(0, 80);
+  const key = cacheKey(text);
   const cached = prefetchCache.get(key);
   if (cached) {
     prefetchCache.delete(key);
@@ -179,6 +188,7 @@ async function synthesizeWithCache(text: string, voiceName: string, languageCode
 /** Reusable audio element to maintain user-gesture autoplay permission */
 let sharedAudio: HTMLAudioElement | null = null;
 let wordProgressTimer: number | null = null;
+let abortResolve: (() => void) | null = null; // resolves the current speakChunk promise on stop
 
 function getAudio(): HTMLAudioElement {
   if (!sharedAudio) sharedAudio = new Audio();
@@ -194,14 +204,21 @@ export function pausePlayback(): void {
 
 /** Stop current Google TTS playback immediately */
 export function stopPlayback(): void {
-  if (sharedAudio) {
-    sharedAudio.pause();
-    sharedAudio.removeAttribute('src');
-    sharedAudio.load();
-  }
   if (wordProgressTimer !== null) {
     clearInterval(wordProgressTimer);
     wordProgressTimer = null;
+  }
+  if (sharedAudio) {
+    sharedAudio.pause();
+    sharedAudio.onended = null;
+    sharedAudio.onerror = null;
+    sharedAudio.removeAttribute('src');
+    sharedAudio.load();
+  }
+  // Unblock any pending speakChunk promise
+  if (abortResolve) {
+    abortResolve();
+    abortResolve = null;
   }
 }
 
@@ -219,13 +236,22 @@ export async function speakChunk(
   const parts = text.length > maxLen ? splitText(text, maxLen) : [text];
 
   let partOffset = 0;
+  let aborted = false;
+
   for (const part of parts) {
+    if (aborted) break;
+
     const blob = await synthesizeWithCache(part, voiceName, languageCode, rate);
+    if (aborted) break;
+
     const url = URL.createObjectURL(blob);
     const audio = getAudio();
 
     const offset = partOffset;
     await new Promise<void>((resolve, reject) => {
+      // Register abort handler so stopPlayback() can unblock us
+      abortResolve = () => { aborted = true; URL.revokeObjectURL(url); resolve(); };
+
       if (onWordProgress) {
         const wordBounds: number[] = [];
         const re = /\S+/g;
@@ -247,11 +273,13 @@ export async function speakChunk(
 
       audio.onended = () => {
         if (wordProgressTimer !== null) { clearInterval(wordProgressTimer); wordProgressTimer = null; }
+        abortResolve = null;
         URL.revokeObjectURL(url);
         resolve();
       };
       audio.onerror = () => {
         if (wordProgressTimer !== null) { clearInterval(wordProgressTimer); wordProgressTimer = null; }
+        abortResolve = null;
         URL.revokeObjectURL(url);
         reject(new Error('Playback failed'));
       };
