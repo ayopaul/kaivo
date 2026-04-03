@@ -34,15 +34,24 @@
   --highlight-bg: rgba(44, 30, 14, 0.08);
 }
 
-html, body {
+html {
   height: 100%;
   height: 100dvh;
+}
+
+body {
+  height: 100%;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+/* Ensure all Next.js wrapper divs stretch to full height */
+body > div, body > div > div {
+  height: 100%;
 }
 
 #app {
@@ -566,14 +575,17 @@ html, body {
   .bookmark-panel,
   .settings-panel,
   .toc-panel {
-    position: fixed;
-    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
-    left: 0.5rem;
-    right: 0.5rem;
-    width: auto;
-    max-width: none;
+    position: fixed !important;
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px)) !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
     max-height: 55dvh;
     border-radius: 12px 12px 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
   }
 
   .bookmark-list {
@@ -583,6 +595,10 @@ html, body {
   .settings-panel-body {
     max-height: 48dvh;
     overflow-y: auto;
+  }
+
+  .toc-list {
+    max-height: 48dvh;
   }
 
   .bottom-bar-content {
