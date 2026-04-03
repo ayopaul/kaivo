@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BookData } from './pdf-extractor';
 import Landing from './Landing';
 import Reader from './Reader';
@@ -14,6 +14,8 @@ import {
 } from './google-drive';
 import { loadLocalLibrary } from './library-storage';
 
+const INSTALL_DISMISSED_KEY = 'ebook:install-dismissed';
+
 type View = 'landing' | 'library' | 'reader';
 
 const App: React.FC = () => {
@@ -24,9 +26,10 @@ const App: React.FC = () => {
   const [driveSignedIn, setDriveSignedIn] = useState(false);
   const [userProfile, setUserProfile] = useState<GoogleUserProfile | null>(null);
   const [hasLibrary, setHasLibrary] = useState(false);
+  const [showInstallPrompt, setShowInstallPrompt] = useState(false);
+  const deferredPromptRef = useRef<any>(null);
 
   useEffect(() => {
-    // Check if there are library entries
     setHasLibrary(loadLocalLibrary().length > 0);
 
     if (isDriveConfigured()) {
@@ -36,6 +39,33 @@ const App: React.FC = () => {
         setDriveSignedIn(signedIn);
         if (signedIn) setUserProfile(getUserProfile());
       });
+    }
+
+    // PWA install prompt
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+      || (navigator as any).standalone === true;
+    const wasDismissed = localStorage.getItem(INSTALL_DISMISSED_KEY);
+
+    if (!isStandalone && !wasDismissed) {
+      // Chrome/Edge: capture the beforeinstallprompt event
+      const handler = (e: Event) => {
+        e.preventDefault();
+        deferredPromptRef.current = e;
+        setShowInstallPrompt(true);
+      };
+      window.addEventListener('beforeinstallprompt', handler);
+
+      // Safari/Firefox: show manual instructions after a short delay
+      const timer = setTimeout(() => {
+        if (!deferredPromptRef.current) {
+          setShowInstallPrompt(true);
+        }
+      }, 2000);
+
+      return () => {
+        window.removeEventListener('beforeinstallprompt', handler);
+        clearTimeout(timer);
+      };
     }
   }, []);
 
@@ -72,6 +102,29 @@ const App: React.FC = () => {
   const handleShowLibrary = useCallback(() => setView('library'), []);
   const handleBackToLanding = useCallback(() => setView('landing'), []);
 
+  const handleInstall = useCallback(async () => {
+    const prompt = deferredPromptRef.current;
+    if (prompt) {
+      prompt.prompt();
+      const result = await prompt.userChoice;
+      if (result.outcome === 'accepted') {
+        setShowInstallPrompt(false);
+      }
+      deferredPromptRef.current = null;
+    } else {
+      // No native prompt (Safari) — dismiss and let the instructions guide them
+      setShowInstallPrompt(false);
+    }
+  }, []);
+
+  const handleDismissInstall = useCallback(() => {
+    setShowInstallPrompt(false);
+    localStorage.setItem(INSTALL_DISMISSED_KEY, Date.now().toString());
+  }, []);
+
+  const isSafari = typeof navigator !== 'undefined' && /Safari/i.test(navigator.userAgent) && !/Chrome/i.test(navigator.userAgent);
+  const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
+
   return (
     <div id="app">
       {view === 'landing' && (
@@ -101,6 +154,34 @@ const App: React.FC = () => {
           cloudEnabled={driveSignedIn}
           userProfile={userProfile}
         />
+      )}
+      {showInstallPrompt && view === 'landing' && (
+        <div className="install-banner">
+          <div className="install-banner-content">
+            <div className="install-banner-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M12 2v13M12 15l-4-4M12 15l4-4"/>
+                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+              </svg>
+            </div>
+            <div className="install-banner-text">
+              <strong>Install Ebook Reader</strong>
+              {(isSafari || isIOS) ? (
+                <span>
+                  Tap <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: 'middle', margin: '0 2px' }}><path d="M4 12v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> then <strong>Add to Home Screen</strong>
+                </span>
+              ) : (
+                <span>Read offline with a full-screen experience</span>
+              )}
+            </div>
+            <div className="install-banner-actions">
+              {!isSafari && !isIOS && (
+                <button className="install-btn" onClick={handleInstall}>Install</button>
+              )}
+              <button className="install-dismiss" onClick={handleDismissInstall} title="Dismiss">&times;</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

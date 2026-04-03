@@ -129,6 +129,7 @@ export class CanvasRenderer {
   onProgress?: (progress: number, direction: 'up' | 'down') => void;
   onCursorChange?: (charOffset: number) => void;
   onTextSelected?: (text: string) => void;
+  onLinkClick?: (href: string, fromProgress: number) => void;
 
   // Bound handlers
   private _onWheel!: (e: WheelEvent) => void;
@@ -875,6 +876,9 @@ export class CanvasRenderer {
         layoutY >= region.y &&
         layoutY <= region.y + region.height
       ) {
+        if (this.onLinkClick) {
+          this.onLinkClick(region.href, this.getProgress());
+        }
         window.open(region.href, '_blank', 'noopener,noreferrer');
         return;
       }

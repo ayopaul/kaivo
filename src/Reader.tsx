@@ -42,7 +42,7 @@ function formatTime(ts: number): string {
 
 // Font settings persistence
 function loadFontFamily(): string {
-  try { return localStorage.getItem('ebook:settings:fontFamily') || "'Inter', system-ui, sans-serif"; } catch { return "'Inter', system-ui, sans-serif"; }
+  try { return localStorage.getItem('ebook:settings:fontFamily') || "'Playfair Display', Georgia, serif"; } catch { return "'Playfair Display', Georgia, serif"; }
 }
 function saveFontFamily(family: string) {
   try { localStorage.setItem('ebook:settings:fontFamily', family); } catch { /* */ }
@@ -55,6 +55,7 @@ function saveFontWeight(weight: number) {
 }
 
 const FONT_OPTIONS = [
+  { label: 'Playfair Display', value: "'Playfair Display', Georgia, serif" },
   { label: 'Inter', value: "'Inter', system-ui, sans-serif" },
   { label: 'Lora', value: "'Lora', Georgia, serif" },
   { label: 'Merriweather', value: "'Merriweather', Georgia, serif" },
@@ -192,6 +193,13 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     renderer.setBionic(bionicEnabled);
     renderer.setFontFamily(fontFamily);
     renderer.setFontWeight(fontWeight);
+
+    // When user clicks a link, save position for "back" navigation (only on first jump)
+    renderer.onLinkClick = (_href, fromProgress) => {
+      if (readingPositionRef.current === null) {
+        setReadingPosition(fromProgress);
+      }
+    };
 
     // When user taps a word, seek voice reader to that position
     renderer.onCursorChange = (charOffset) => {
@@ -369,45 +377,50 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
     return ctx;
   }, [bookData.allText]);
 
-  const handleBookmarkClick = useCallback((e: React.MouseEvent) => {
-    if (e.shiftKey || bookmarkPanelOpen) {
-      setBookmarkPanelOpen(prev => !prev);
-    } else {
-      const renderer = rendererRef.current;
-      if (!renderer) return;
-      const position = renderer.getProgress();
-      const pct = Math.round(position * 100);
-      const current = loadBookmarks(fileKey);
-      const isDuplicate = current.some(b => Math.abs(b.position - position) < 0.01);
-      if (isDuplicate) {
-        const filtered = current.filter(b => Math.abs(b.position - position) >= 0.01);
-        saveBookmarks(fileKey, filtered);
-        setBookmarks(filtered);
-        flashBookmarkBtn(false);
-        return;
-      }
-      const contextText = getContextText(position);
-      const entry: BookmarkEntry = { position, label: `${pct}%`, timestamp: Date.now(), contextText };
-      const updated = [...current, entry].sort((a, b) => a.position - b.position);
-      saveBookmarks(fileKey, updated);
-      setBookmarks(updated);
-      flashBookmarkBtn(true);
-      if (cloudEnabled && isSignedIn()) syncBookProgress(fileKey, bookData.title, position, updated, bookData.fileType);
+  const handleBookmarkClick = useCallback(() => {
+    setBookmarkPanelOpen(prev => !prev);
+  }, []);
+
+  const handleBookmarkAdd = useCallback(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const position = renderer.getProgress();
+    const pct = Math.round(position * 100);
+    const current = loadBookmarks(fileKey);
+    const isDuplicate = current.some(b => Math.abs(b.position - position) < 0.01);
+    if (isDuplicate) {
+      const filtered = current.filter(b => Math.abs(b.position - position) >= 0.01);
+      saveBookmarks(fileKey, filtered);
+      setBookmarks(filtered);
+      flashBookmarkBtn(false);
+      return;
     }
-  }, [bookmarkPanelOpen, fileKey, flashBookmarkBtn, cloudEnabled, bookData.title, getContextText]);
+    const contextText = getContextText(position);
+    const entry: BookmarkEntry = { position, label: `${pct}%`, timestamp: Date.now(), contextText };
+    const updated = [...current, entry].sort((a, b) => a.position - b.position);
+    saveBookmarks(fileKey, updated);
+    setBookmarks(updated);
+    flashBookmarkBtn(true);
+    if (cloudEnabled && isSignedIn()) syncBookProgress(fileKey, bookData.title, position, updated, bookData.fileType);
+  }, [fileKey, flashBookmarkBtn, cloudEnabled, bookData.title, getContextText]);
 
   const [readingPosition, setReadingPosition] = useState<number | null>(null);
+  const readingPositionRef = useRef<number | null>(null);
+  // Keep ref in sync with state
+  readingPositionRef.current = readingPosition;
 
   const handleBookmarkContextMenu = useCallback((e: React.MouseEvent) => { e.preventDefault(); setBookmarkPanelOpen(prev => !prev); }, []);
   const handleBookmarkNavigate = useCallback((position: number) => {
-    // Save current reading position before jumping
-    const currentPos = rendererRef.current?.getProgress() ?? null;
-    if (currentPos !== null && Math.abs(currentPos - position) > 0.01) {
-      setReadingPosition(currentPos);
+    // Only save the original reading position on the first jump
+    if (readingPosition === null) {
+      const currentPos = rendererRef.current?.getProgress() ?? null;
+      if (currentPos !== null && Math.abs(currentPos - position) > 0.01) {
+        setReadingPosition(currentPos);
+      }
     }
     rendererRef.current?.setScrollProgress(position);
     setBookmarkPanelOpen(false);
-  }, []);
+  }, [readingPosition]);
   const handleReturnToReading = useCallback(() => {
     if (readingPosition !== null) {
       rendererRef.current?.setScrollProgress(readingPosition);
@@ -544,6 +557,14 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
       <div className="reader-canvas-wrap">
         <canvas ref={canvasRef}></canvas>
         <div className="scroll-hint" ref={hintRef}>Scroll to read &middot; Pinch to zoom</div>
+        {readingPosition !== null && (
+          <button className="back-to-reading-fab" onClick={handleReturnToReading}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 8h10M3 8l4-4M3 8l4 4"/>
+            </svg>
+            Back to {Math.round(readingPosition * 100)}%
+          </button>
+        )}
       </div>
 
       {/* Bottom bar */}
@@ -618,23 +639,30 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
           {/* Bookmark button */}
           <div className="bookmark-group">
-            <button className="bookmark-btn" ref={bookmarkBtnRef} title="Add bookmark"
-              onClick={handleBookmarkClick} onContextMenu={handleBookmarkContextMenu}>
+            <button className="bookmark-btn" ref={bookmarkBtnRef} title="Bookmarks"
+              onClick={handleBookmarkClick}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M4 2h8a1 1 0 0 1 1 1v12l-5-3-5 3V3a1 1 0 0 1 1-1z"/>
               </svg>
             </button>
             <div className={`bookmark-panel${bookmarkPanelOpen ? ' open' : ''}`} ref={bookmarkPanelRef}>
               <div className="bookmark-panel-header">
-                Bookmarks
-                {readingPosition !== null && (
-                  <button className="bookmark-return-btn" onClick={handleReturnToReading} title="Return to reading position">
+                <span>Bookmarks</span>
+                <div className="bookmark-panel-header-actions">
+                  {readingPosition !== null && (
+                    <button className="bookmark-return-btn" onClick={handleReturnToReading} title="Return to reading position">
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 8h10M3 8l4-4M3 8l4 4"/>
+                      </svg>
+                      {Math.round(readingPosition * 100)}%
+                    </button>
+                  )}
+                  <button className="bookmark-add-btn" onClick={handleBookmarkAdd} title="Bookmark this page">
                     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M3 8h10M3 8l4-4M3 8l4 4"/>
+                      <line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/>
                     </svg>
-                    Back to {Math.round(readingPosition * 100)}%
                   </button>
-                )}
+                </div>
               </div>
               <div className="bookmark-list">
                 {bookmarks.length === 0 ? (
@@ -668,9 +696,9 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
               onClick={() => setSettingsOpen(prev => !prev)}
               title="Settings"
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <circle cx="8" cy="8" r="2.5"/>
-                <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M2.9 2.9l1.1 1.1M12 12l1.1 1.1M2.9 13.1l1.1-1.1M12 4l1.1-1.1"/>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                <circle cx="12" cy="12" r="3"/>
               </svg>
             </button>
             <div className={`settings-panel${settingsOpen ? ' open' : ''}`} ref={settingsPanelRef}>
@@ -744,6 +772,13 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
                         <span className="settings-profile-name">{userProfile.name}</span>
                         <span className="settings-profile-email">{userProfile.email}</span>
                       </div>
+                      <button className={`settings-sync-btn${cloudSyncing ? ' syncing' : ''}`} onClick={handleCloudSync} title="Sync now">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21.5 2v6h-6"/><path d="M2.5 22v-6h6"/>
+                          <path d="M2.5 11.5a10 10 0 0 1 16.5-5.5L21.5 8"/>
+                          <path d="M21.5 12.5a10 10 0 0 1-16.5 5.5L2.5 16"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 )}
@@ -774,16 +809,6 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
             </div>
           </div>
 
-          {/* Far right: Cloud sync (if connected) */}
-          {cloudEnabled && (
-            <button className={`cloud-sync-btn${cloudSyncing ? ' syncing' : ''}`} onClick={handleCloudSync} title="Sync to Google Drive">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-            </button>
-          )}
         </div>
       </div>
     </div>

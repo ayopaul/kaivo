@@ -111,8 +111,40 @@ const Landing: React.FC<LandingProps> = ({
 
   return (
     <div className="landing">
+      <img className="landing-logo" src="/icons/icon-512.png" alt="" width="256" height="256" />
       <h1>Reader</h1>
-      <p>A gesture-driven reading experience with pinch-to-zoom, scroll morph, and fisheye typography effects.</p>
+      <p>A gesture-driven reading experience with pinch-to-zoom, scroll morph, and HD voice reading.</p>
+
+      {/* Google Drive sync — primary CTA when not signed in */}
+      {driveReady && !driveSignedIn && (
+        <button className="drive-sync-cta" onClick={onDriveSignIn}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.5">
+            <path d="M4.5 2.5l7 12h9l-7-12z" stroke="currentColor"/>
+            <path d="M15.5 22h-9l-4.5-7.5h9z" stroke="currentColor"/>
+            <path d="M20.5 14.5l-4.5 7.5-7-12 4.5-7.5z" stroke="currentColor"/>
+          </svg>
+          <div className="drive-sync-cta-text">
+            <strong>Sign in with Google</strong>
+            <span>Sync your books and progress across devices</span>
+          </div>
+        </button>
+      )}
+
+      {/* Signed-in user profile */}
+      {driveReady && driveSignedIn && (
+        <div className="drive-connected-info">
+          {userProfile?.picture && (
+            <img className="drive-profile-pic" src={userProfile.picture} alt="" referrerPolicy="no-referrer" />
+          )}
+          <div className="drive-profile-details">
+            {userProfile?.name && <span className="drive-profile-name">{userProfile.name}</span>}
+            <button className="drive-btn drive-btn-connected" onClick={onDriveSignOut}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      )}
+
       <div
         className={`drop-zone${dragOver ? ' drag-over' : ''}`}
         onClick={handleClick}
@@ -139,32 +171,11 @@ const Landing: React.FC<LandingProps> = ({
           Your Library
         </button>
       )}
-      {driveReady && (
-        <div className="drive-status">
-          {driveSignedIn ? (
-            <div className="drive-connected-info">
-              {userProfile?.picture && (
-                <img className="drive-profile-pic" src={userProfile.picture} alt="" referrerPolicy="no-referrer" />
-              )}
-              <div className="drive-profile-details">
-                {userProfile?.name && <span className="drive-profile-name">{userProfile.name}</span>}
-                <button className="drive-btn drive-btn-connected" onClick={onDriveSignOut}>
-                  Sign out of Google Drive
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button className="drive-btn" onClick={onDriveSignIn}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              Sync with Google Drive
-            </button>
-          )}
-        </div>
-      )}
+      <div className="landing-footer">
+        <a href="/privacy">Privacy Policy</a>
+        <span className="landing-footer-dot">&middot;</span>
+        <a href="/terms">Terms of Service</a>
+      </div>
     </div>
   );
 };
