@@ -6,7 +6,7 @@
  * - "google": Google Cloud TTS (free 1M chars/mo, high quality WaveNet/Neural2 voices)
  */
 
-import { isConfigured as isGoogleTTSConfigured, speakChunk as googleSpeakChunk, prefetch as googlePrefetch, stopPlayback as googleStopPlayback, getSavedVoiceName, getSavedLanguageCode } from './google-tts';
+import { isConfigured as isGoogleTTSConfigured, speakChunk as googleSpeakChunk, prefetch as googlePrefetch, stopPlayback as googleStopPlayback, pausePlayback as googlePausePlayback, getSavedVoiceName, getSavedLanguageCode } from './google-tts';
 
 export type TTSEngine = 'system' | 'google';
 
@@ -125,8 +125,9 @@ export class VoiceReader {
     if (!this.playing) return;
     if (this.engine === 'system') {
       this.synth.pause();
+    } else {
+      googlePausePlayback();
     }
-    // Google TTS doesn't support pause mid-chunk — it finishes current chunk
     this.paused = true;
     this.onStateChange?.();
   }

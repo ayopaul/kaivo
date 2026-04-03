@@ -185,6 +185,13 @@ function getAudio(): HTMLAudioElement {
   return sharedAudio;
 }
 
+/** Pause current Google TTS audio */
+export function pausePlayback(): void {
+  if (sharedAudio && !sharedAudio.paused) {
+    sharedAudio.pause();
+  }
+}
+
 /** Stop current Google TTS playback immediately */
 export function stopPlayback(): void {
   if (sharedAudio) {

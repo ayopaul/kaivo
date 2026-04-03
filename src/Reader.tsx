@@ -472,12 +472,19 @@ const Reader: React.FC<ReaderProps> = ({ bookData, fileKey, onBack, cloudEnabled
 
     if (vr.isPlaying()) {
       vr.pause();
-    } else {
-      // Whether resuming from pause or starting fresh, always seek to current visible position
+    } else if (vr.isPaused()) {
+      // Resume from where we are now (current scroll position)
       const renderer = rendererRef.current;
       const currentProgress = renderer?.getProgress() ?? progress;
       const charOffset = Math.floor(currentProgress * bookData.allText.length);
       vr.stop();
+      vr.seekToOffset(charOffset);
+      vr.play();
+    } else {
+      // Start fresh from current visible position
+      const renderer = rendererRef.current;
+      const currentProgress = renderer?.getProgress() ?? progress;
+      const charOffset = Math.floor(currentProgress * bookData.allText.length);
       vr.seekToOffset(charOffset);
       vr.play();
     }
