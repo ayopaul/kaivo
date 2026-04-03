@@ -29,6 +29,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <head>
         <meta name="google-site-verification" content="6v-1oXRI-BanWH2j67FoTP8a-gOlePZvPi2BfjLlHSs" />
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-EKMWH0BHF0"></script>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.dataLayer = window.dataLayer || [];
+              function gtag(){dataLayer.push(arguments);}
+              gtag('js', new Date());
+              gtag('config', 'G-EKMWH0BHF0');
+            `,
+          }}
+        />
         <link rel="icon" href="/favicon.ico" sizes="any" />
         <link rel="icon" href="/icons/icon-192.png" type="image/png" />
         <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />

@@ -54,7 +54,7 @@ const Landing: React.FC<LandingProps> = ({
       const fileKey = `ebook:${file.name}:${file.size}`;
 
       // Save to library immediately
-      saveLibraryEntry(fileKey, bookData.title, bookData.fileType, 0);
+      saveLibraryEntry(fileKey, bookData.title, bookData.fileType, 0, bookData.coverImage);
 
       // Save book file to Google Drive (wait for it to complete)
       if (driveSignedIn && isSignedIn()) {

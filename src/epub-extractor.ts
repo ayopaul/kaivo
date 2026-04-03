@@ -76,7 +76,36 @@ export async function extractEpub(file: File): Promise<BookData> {
   // 4. Extract TOC
   const toc = await extractEpubToc(zip, opfDoc, opfDir, spineOffsets, totalLength);
 
-  return { title, pageImages: [], allText, toc, fileType: 'epub' };
+  // 5. Extract cover image
+  let coverImage: string | undefined;
+  try {
+    // Look for cover in metadata or manifest
+    const coverMeta = opfDoc.querySelector('meta[name="cover"]');
+    const coverId = coverMeta?.getAttribute('content');
+    let coverHref = coverId ? manifest.get(coverId) : null;
+
+    // Fallback: look for item with "cover" in id or properties
+    if (!coverHref) {
+      for (const [id, href] of manifest.entries()) {
+        if (/cover/i.test(id) && /\.(jpe?g|png|gif|webp|svg)$/i.test(href)) {
+          coverHref = href;
+          break;
+        }
+      }
+    }
+
+    if (coverHref) {
+      const coverPath = opfDir + coverHref;
+      const coverData = await zip.file(coverPath)?.async('base64');
+      if (coverData) {
+        const ext = coverHref.split('.').pop()?.toLowerCase() || 'jpeg';
+        const mime = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+        coverImage = `data:${mime};base64,${coverData}`;
+      }
+    }
+  } catch { /* ignore */ }
+
+  return { title, pageImages: [], allText, toc, fileType: 'epub', coverImage };
 }
 
 /** Extract TOC from NCX or NAV document */

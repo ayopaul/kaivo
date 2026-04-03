@@ -30,6 +30,7 @@ export interface BookData {
   allText: string;
   toc: TocEntry[];
   fileType: 'pdf' | 'epub';
+  coverImage?: string; // data URL of cover thumbnail
 }
 
 function isMobile(): boolean {
@@ -107,7 +108,22 @@ export async function extractPdf(
     finalText = stripInlineToc(allText, toc);
   }
 
-  return { title, pageImages, allText: finalText, toc, fileType: 'pdf' };
+  // Extract cover thumbnail from first page
+  let coverImage: string | undefined;
+  try {
+    const coverPage = await pdf.getPage(1);
+    const vp = coverPage.getViewport({ scale: 0.5 });
+    const thumbW = Math.min(200, vp.width);
+    const scale = thumbW / vp.width * 0.5;
+    const thumbVp = coverPage.getViewport({ scale });
+    const c = document.createElement('canvas');
+    c.width = thumbVp.width;
+    c.height = thumbVp.height;
+    await coverPage.render({ canvasContext: c.getContext('2d')!, viewport: thumbVp }).promise;
+    coverImage = c.toDataURL('image/jpeg', 0.7);
+  } catch { /* ignore */ }
+
+  return { title, pageImages, allText: finalText, toc, fileType: 'pdf', coverImage };
 }
 
 /** Extract text from page items, detecting paragraphs and headings from layout */

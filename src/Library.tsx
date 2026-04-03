@@ -170,10 +170,16 @@ const Library: React.FC<LibraryProps> = ({ onBack, onFileLoaded, driveSignedIn }
               >
                 <div
                   className="library-card-thumb"
-                  style={{ backgroundColor: titleColor(entry.title) }}
+                  style={{ backgroundColor: entry.coverImage ? undefined : titleColor(entry.title) }}
                 >
-                  <span className="library-card-type">{entry.fileType.toUpperCase()}</span>
-                  <span className="library-card-thumb-title">{entry.title}</span>
+                  {entry.coverImage ? (
+                    <img className="library-card-cover" src={entry.coverImage} alt="" />
+                  ) : (
+                    <>
+                      <span className="library-card-type">{entry.fileType.toUpperCase()}</span>
+                      <span className="library-card-thumb-title">{entry.title}</span>
+                    </>
+                  )}
                 </div>
                 <div className="library-card-info">
                   <span className="library-card-title">{entry.title}</span>

@@ -4,6 +4,7 @@ export interface LibraryEntry {
   fileType: 'pdf' | 'epub';
   progress: number;
   lastRead: number;
+  coverImage?: string;
 }
 
 const LIBRARY_KEY = 'ebook:library';
@@ -12,11 +13,17 @@ export function saveLibraryEntry(
   fileKey: string,
   title: string,
   fileType: 'pdf' | 'epub',
-  progress: number
+  progress: number,
+  coverImage?: string
 ) {
   try {
     const library = JSON.parse(localStorage.getItem(LIBRARY_KEY) || '{}');
-    library[fileKey] = { fileKey, title, fileType, progress, lastRead: Date.now() };
+    const existing = library[fileKey];
+    library[fileKey] = {
+      fileKey, title, fileType, progress, lastRead: Date.now(),
+      // Preserve existing cover if not provided
+      coverImage: coverImage || existing?.coverImage,
+    };
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(library));
   } catch { /* quota */ }
 }
